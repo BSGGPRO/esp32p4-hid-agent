@@ -570,6 +570,26 @@
       setText('pm-counts', counts);
     }
 
+    // 物理频率自检：固件用 mcycle/µs 独立测得（不是读 PM 状态），可用来验证开关不是摆设
+    var measured = num(pm.measured_mhz);
+    setText('pm-measured', measured === null ? '—' : Math.round(measured) + ' MHz');
+    var checkEl = $('pm-selfcheck');
+    if (measured === null || !pmKnown) {
+      setText('pm-selfcheck', '—');
+      toggleClass(checkEl, 'good', false);
+      toggleClass(checkEl, 'bad', false);
+    } else if (pmOn) {
+      var downed = measured < 300;
+      setText('pm-selfcheck', downed ? '已降频 ✓' : '未见降频 ⚠');
+      toggleClass(checkEl, 'good', downed);
+      toggleClass(checkEl, 'bad', !downed);
+    } else {
+      var full = measured >= 300;
+      setText('pm-selfcheck', full ? '满频 ✓' : '未满频 ⚠');
+      toggleClass(checkEl, 'good', full);
+      toggleClass(checkEl, 'bad', !full);
+    }
+
     // 网络
     var netState = $('net-state');
     var up = net.up === true;
