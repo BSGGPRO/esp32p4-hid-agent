@@ -1,0 +1,111 @@
+{
+  "name": "esp32p4-hid-agent",
+  "version": "1.2.0",
+  "proto": "1.2",
+  "generated": "2026-10-18",
+  "purpose": "让 AI/脚本通过一块 ESP32-P4 板子的 USB HID 键鼠操作本机（截屏闭环，落点约 1px）",
+  "environment": {
+    "os": "Windows",
+    "repo": "%USERPROFILE%\\Documents\\deepseek-harness\\default-workspace\\esp32p4-hid-agent",
+    "python": "%USERPROFILE%\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe",
+    "python_version": "3.12",
+    "hub_http": "http://127.0.0.1:8765",
+    "hub_lan": "http://192.168.1.221:8765",
+    "tcp_passthrough": "127.0.0.1:8766",
+    "board": {
+      "model": "JC-ESP32P4-M3-DEV",
+      "usb": "HID composite keyboard+mouse, VID_303A PID_4004",
+      "uart": "COM7 @115200, JSON-lines",
+      "flash_mb": 16,
+      "psram_mb": 32
+    }
+  },
+  "rules": [
+    "所有命令用 --transport tcp（hub 独占 COM7，直连会 board_busy / WinError 5）",
+    "只使用本地 shell 执行；没有终端能力就不要声称能操作",
+    "只在用户明确要求时动键鼠；不要往聊天窗口打字",
+    "不最大化/移动/缩放用户的画图或聊天窗口",
+    "板子报错就停手报告，不要反复重试",
+    "一次只开一个透传客户端（独占）"
+  ],
+  "entrypoints": [
+    {
+      "name": "brain.py",
+      "kind": "cli",
+      "path": "pc/brain.py",
+      "preferred": true,
+      "notes": "高层动作 + 闭环定位 + JSON 输出；--json 必须放在子命令之前",
+      "examples": [
+        "pc\\brain.py --transport tcp --json info",
+        "pc\\brain.py --transport tcp --json look",
+        "pc\\brain.py --transport tcp --json wins",
+        "pc\\brain.py --transport tcp --json point 640 360",
+        "pc\\brain.py --transport tcp run --script plan.json"
+      ]
+    },
+    {
+      "name": "agent_bridge.py",
+      "kind": "cli",
+      "path": "pc/agent_bridge.py",
+      "preferred": false,
+      "notes": "低层协议调试；--transport uart 需要板子锁，hub 运行时不可用"
+    },
+    {
+      "name": "http",
+      "kind": "http",
+      "base": "http://127.0.0.1:8765",
+      "endpoints": {
+        "GET /api/board": "板子 stats（CPU/内存/TF卡/温度/UART/PM）",
+        "GET /api/pc": "本机 stats（页面已不使用，接口保留）",
+        "GET /api/health": "hub/板子/透传状态",
+        "GET /api/cmd": "不支持；只能 POST",
+        "POST /api/cmd": "白名单 {ping,stats,set,sd_remount,sd_test,mouse_move}；mouse_move 仅允许 dx=dy=0（安全限制），不可用于绘图"
+      }
+    }
+  ],
+  "ops": [
+    {"op": "look", "cli": "look", "args": {"region": "x,y,w,h (optional)", "path": "输出 PNG 路径"}, "desc": "截屏 + 光标/前台窗口/窗口列表；产出 pc/shot.png"},
+    {"op": "point", "cli": "point x y [--tol]", "args": {"x": "int", "y": "int", "tol": "default 2"}, "desc": "绝对定位（闭环）"},
+    {"op": "locate", "cli": "locate x y [--tol]", "args": {"tol": "default 1"}, "desc": "绝对定位，1px 容差 + 抗用户打断"},
+    {"op": "move", "cli": "move dx dy", "args": {"dx": "int", "dy": "int"}, "desc": "相对移动，dy 正=向下"},
+    {"op": "click", "cli": "click [x y] [--button] [--count]", "args": {"button": "left|right|middle", "count": "int"}, "desc": "点击（给坐标先定位）"},
+    {"op": "drag", "cli": "drag x1 y1 x2 y2", "desc": "定位->按下->定位->抬起（会断线）"},
+    {"op": "drag_path", "cli": "drag-path \"x1,y1;x2,y2;...\"", "args": {"points": "点列字符串或 JSON 数组文件", "button": "left|right|middle"}, "desc": "一次按下-连续移动-抬起（画线用这个）"},
+    {"op": "scroll", "cli": "scroll amount", "desc": "滚轮，正=向上"},
+    {"op": "type", "cli": "type \"text\" [--cps]", "desc": "ASCII 0x20-0x7E 逐字符"},
+    {"op": "key", "cli": "key ctrl+s", "desc": "组合键"},
+    {"op": "tap", "cli": "tap enter", "desc": "单击按键"},
+    {"op": "hold/release", "cli": "-", "desc": "run 脚本里的 op：按住/释放（键盘）"},
+    {"op": "wins", "cli": "wins", "desc": "可见窗口列表"},
+    {"op": "focus", "cli": "focus 画图", "desc": "按标题子串切前台"},
+    {"op": "launch", "cli": "launch", "desc": "启动本机进程（不走 HID）"},
+    {"op": "clip_get/clip_set", "cli": "clip get|set", "desc": "剪贴板"},
+    {"op": "read_text", "cli": "read-text", "desc": "ctrl+a/ctrl+c 读前台窗口文字"},
+    {"op": "diff", "cli": "run 内", "desc": "两张 PNG 像素差分"},
+    {"op": "wait_change", "cli": "run 内", "desc": "等屏幕变化"},
+    {"op": "sleep", "cli": "run 内", "desc": "等待 ms"},
+    {"op": "stop", "cli": "run 内", "desc": "中止后续步骤"},
+    {"op": "info", "cli": "info", "desc": "板子状态 + 屏幕 + 光标"}
+  ],
+  "precision": {
+    "closed_loop_error_px": 1,
+    "evidence": "docs/evidence/home-calib-20261018-005311.txt",
+    "note": "相对 HID + GetCursorPos 闭环；不要开环算步数（Windows 指针加速非线性）",
+    "profile": "C:\\ProgramData\\dsh\\pointer-profile.json（按 分辨率|虚拟桌面|DPI 模式 分 key）",
+    "recalibrate_cmd": "tools\\home-calibrate.py --transport tcp --apply"
+  },
+  "drawing_examples": [
+    "tools/draw-rage.py --detect   # 只检测窗口/画布，不动笔",
+    "tools/draw-rage.py --plan     # 只打印笔画坐标",
+    "tools/draw-rage.py --mock     # 离屏验证几何"
+  ],
+  "docs": [
+    "docs/agent-handoff.md",
+    "docs/PASTE-TO-AI.md",
+    "docs/pointer-calibration.md",
+    "docs/brain-usage.md",
+    "docs/protocol.md",
+    "docs/web-dashboard.md",
+    "docs/hardware-facts.md"
+  ]
+}

@@ -1,0 +1,165 @@
+# 交接说明：让另一个 AI 操控这块 ESP32-P4 板子（USB 键鼠）
+
+> 给接手方的 5 分钟说明。读完你就能：截屏 → 定位 → 点击/拖拽 → 打字 → 验证结果。
+> 板子是 **USB HID 复合设备（键盘+鼠标）**，插在这台 Windows 上，等于一只"电子的手"。
+
+---
+
+## 0. 三条硬前提（先确认，否则一定失败）
+
+| # | 前提 | 怎么确认 |
+|---|---|---|
+| 1 | **必须能在这台 Windows 上执行命令**（本地 shell / 终端工具调用） | 下面「自检」5 条命令都能跑通 |
+| 2 | hub 在跑（它占着 COM7 并开 TCP 透传） | `curl http://127.0.0.1:8765/api/health` → `{"ok":true,...}` |
+| 3 | **一律用 `--transport tcp`**（走 hub 的 8766 透传），不要直连 COM7 | 直连会撞板子锁 `board_busy` |
+
+> 板子串口**全局只有一把锁**：同一时刻只能有一个进程用。hub 常驻占用 → 你走 tcp 透传，
+> 由 hub 帮你转发（一次只服务一个客户端，用完即放）。
+
+### 环境（绝对路径，照抄）
+
+```
+仓库     %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+Python   %USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
+         （3.12；有 Pillow；没有 pyserial —— 用 tcp 透传不需要）
+hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221:8765）
+透传     127.0.0.1:8766                （brain.py 的 --transport tcp 就连这里）
+板子     JC-ESP32P4-M3-DEV，固件 v1.2.0 / proto 1.2，USB VID_303A PID_4004
+串口     COM7 @115200，JSON-lines（不要直接抢）
+```
+
+---
+
+## 1. 自检（5 条命令，跑通 = 你已接上）
+
+```bat
+cd /d %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+
+:: ① 板子活着 + 屏幕/光标信息
+"%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe" pc\brain.py --transport tcp --json info
+
+:: ② 截一张屏（多模态 AI 的"眼睛"）
+...\python.exe pc\brain.py --transport tcp --json look
+::  → 生成 pc\shot.png（2560x1440），JSON 里有 path/宽高/光标/前台窗口/窗口列表
+
+:: ③ 列窗口（找画图 / 找目标窗口）
+...\python.exe pc\brain.py --transport tcp --json wins
+
+:: ④ 把光标移到绝对坐标（闭环，误差 ≈1px）
+...\python.exe pc\brain.py --transport tcp --json point 640 360
+
+:: ⑤ 读 HID 状态（确认没有按住的键）
+...\python.exe pc\brain.py --transport tcp --json info
+```
+
+> 上面 `...\python.exe` 就是那条完整 Python 路径。**注意 `--json` 要放在子命令前面**
+> （`brain.py --transport tcp --json info`），否则 argparse 报错。
+
+---
+
+## 2. 三种入口，按需选
+
+| 入口 | 用途 | 限制 |
+|---|---|---|
+| `pc/brain.py <子命令>` | **推荐**：高层动作 + 闭环定位 + JSON 输出 | 一次一个动作，每次连一次透传（约 0.1–0.3 s） |
+| `pc/brain.py run --script plan.json` | **批量**：一次连接串联几十步（画画用这个） | 某个 op 失败默认中止（`--keep-going` 可继续） |
+| `pc/agent_bridge.py <命令>` | 低层协议调试（ping/mouse-move/key-combo…） | `--transport uart` 要板子锁；hub 在跑时用不了。**画画别用它** |
+| `GET /api/board` `/api/pc` | 只读状态（CPU/TF 卡/温度…） | 只读 |
+| `POST /api/cmd` | 网页那个开关（白名单：ping/stats/set/sd_*/mouse_move） | **`mouse_move` 被安全限制为 `dx=dy=0`**，且没有真实移动，**不能用来画画**；远程 HTTP 不能操作桌面 |
+
+---
+
+## 3. 动作清单（brain.py 子命令 / run 的 op）
+
+| 子命令 | 等价 op | 参数 | 例子 |
+|---|---|---|---|
+| `look` | `look` | `[--region x,y,w,h]` | `--json look` |
+| `point` | `point` | `x y [--tol 2]` | `point 100 200` |
+| `locate` | `locate` | `x y [--tol 1]` | `locate 100 200` |
+| `move` | `move` | `dx dy`（相对） | `move 10 -5` |
+| `click` | `click` | `[x y] [--button left/right/middle] [--count N]` | `click 300 400` |
+| `drag` | `drag` | `x1 y1 x2 y2` | `drag 100 100 400 400` |
+| `drag-path` | `drag_path` | `"x1,y1;x2,y2;..."` 或 JSON 数组文件 | 见下 |
+| `scroll` | `scroll` | `amount`（正=向上） | `scroll -3` |
+| `type` | `type` | `text [--cps 40]`（仅 ASCII 0x20-0x7E） | `type "hello"` |
+| `key` | `key` | `combo`（`ctrl+s` / `win+r`） | `key ctrl+z` |
+| `tap` | `tap` | `key [--hold-ms]` | `tap enter` |
+| `wins` | `wins` | — | `--json wins` |
+| `focus` | `focus` | `title`（子串） | `focus 画图` |
+| `read-text` | `read_text` | `[--no-select-all]` | 读前台窗口文字 |
+| `clip` | `clip_get/clip_set` | `get` / `set "..."` | |
+| `info` | `info` | — | `--json info` |
+| `run` | — | `--script plan.json [--keep-going]` | 批量 |
+
+### `run` 脚本格式（一次连接画完整幅画）
+
+```json
+[
+  {"op": "launch", "cmd": "mspaint"},
+  {"op": "sleep",  "ms": 1200},
+  {"op": "focus",  "title": "画图"},
+  {"op": "drag_path", "button": "left",
+   "points": [[300,300],[400,300],[400,400],[300,400],[300,300]]},
+  {"op": "look", "path": "after.png"},
+  {"op": "diff", "a": "before.png", "b": "after.png"}
+]
+```
+
+`drag_path` 是**一次按下-连续移动-抬起**，才是连续线条；`drag` 是"定位→按下→定位→抬起"，会断。
+
+---
+
+## 4. 画画推荐流程（多模态 AI 版）
+
+1. `look` 截图 → 你（能看图）自己看画布在哪、有没有遮挡；
+2. `wins` 找窗口 → `focus 画图`（**不要最大化、不要移动窗口**，用户要同时看聊天窗）；
+3. 在截图上量出画布矩形 → 规划折线（每笔点列）；
+4. 写成 `plan.json` → `run --script plan.json`（几十步一次跑完，比逐个命令快 10 倍）；
+5. 画完 `look` 再截一张 → 自己看图，或 `diff` 做像素差分验证；
+6. 汇报：落点误差、耗时、画了多少笔。
+
+现成参考实现（复杂图、含窗口检测/防遮挡/线宽自适应）：
+`tools/draw-rage.py --detect`（只检测不动笔）、`--plan`（只打印笔画）、`--mock`（离屏验证几何）。
+
+精度：**闭环落点 ≈1 px**；用的是相对鼠标 + `GetCursorPos()` 反馈闭环，
+所以**不要自己算"发多少步能到目标"**，直接 `point/locate/drag_path`，让 brain 收敛。
+细节见 `docs/pointer-calibration.md`（含 CNC 式四角归零与换设备自动适配）。
+
+---
+
+## 5. 安全红线（违反会直接干扰用户）
+
+1. **只在用户明确要求时操作**键鼠；不要"顺手"点一下或打字。
+2. **不要往聊天窗口打字**（历史事故：把 `a` 打进了用户正在用的窗口）。
+3. 每条命令前/后都有 `release_all`；自己写脚本时开头结尾也要各来一次。
+4. **不最大化、不移动、不缩放**用户的画图/聊天窗口。
+5. 不点未知按钮、不关窗口、不改系统设置（不碰注册表/指针加速设置）。
+6. 一次只跑一个客户端：透传是独占的，别并发开两个。
+7. 板子异常（`board_busy` / 超时）就**停手报告**，不要反复重试烧串口。
+
+---
+
+## 6. 常见坑
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `WinError 5 端口被占用` | 直连 COM7，hub 占着 | 加 `--transport tcp` |
+| `board_busy: 板子锁被占用` | 有别的进程/僵尸锁 | 等下一轮看门狗（≤1 min）；或 `python tools/board_lock.py status` |
+| 截图尺寸是 2048×1152 而不是 2560×1440 | 进程没开 DPI 感知（125% 缩放） | 用 `brain.py`/`eyes.py`（内部已 `enable_dpi_awareness`）；自己写代码要先开 |
+| 移动"少走/多走" | Windows「提高指针精确度」非线性 | 用闭环 `point/locate`，别开环算步数 |
+| 透传期间网页数字不动 | 透传独占串口，hub 暂停 stats 轮询 | 正常现象，断开后自动恢复（≤1 s） |
+| 换了一台 1080p 电脑 | 指针增益变了 | `python tools/home-calibrate.py --transport tcp --apply`（10 s，会短暂占用鼠标），之后自动生效 |
+
+---
+
+## 7. 文档索引（全部在本仓库 `docs/`）
+
+| 文件 | 内容 |
+|---|---|
+| `docs/agent-handoff.md` | 本文（交接说明） |
+| `docs/PASTE-TO-AI.md` | 可直接粘贴给另一个 AI 的提示词 |
+| `docs/protocol.md` | 串口 JSON 协议（帧格式/命令/错误码/安全语义） |
+| `docs/brain-usage.md` | brain.py 动作层详解与示例脚本 |
+| `docs/pointer-calibration.md` | 指针精度、四角归零、换设备适配、绝对坐标 HID 路线 |
+| `docs/web-dashboard.md` | hub/网页/接口/TCP 透传/部署（含看门狗与计划任务） |
+| `docs/hardware-facts.md` | 板子硬件事实（引脚/TF 卡/USB/电源等） |
