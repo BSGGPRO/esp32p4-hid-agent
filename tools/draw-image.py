@@ -42,6 +42,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -482,6 +483,61 @@ def detect_canvas_auto() -> tuple[list[int], int, str]:
     return det["box"], int(paint["hwnd"]), shot.path
 
 
+def load_plan_file(path: str):
+    """读「文字计划」，返回 (strokes, canvas_box|None, kind)。
+
+    两种格式：
+      1) 本工具输出的 plan JSON：{"canvas_box":[...], "strokes":[[[x,y],...],...]}
+         —— 坐标已是窗口坐标，画布由 canvas_box 指定；
+      2) 纯文本，一行一条折线：
+             # 注释行
+             canvas: 24,24,976,976        （可选，画布在窗口里的位置）
+             100,100 200,150 300,120      （x,y 空格或逗号分隔，分号也认）
+         没有 canvas: 就当作画布局部坐标（真画时自动检测画布或 --canvas 指定）。
+    """
+    txt = open(path, encoding="utf-8").read()
+    obj = None
+    try:
+        obj = json.loads(txt)
+    except Exception:  # noqa: BLE001
+        obj = None
+    if isinstance(obj, dict) and isinstance(obj.get("strokes"), list):
+        strokes = []
+        for s in obj["strokes"]:
+            pts = [(float(p[0]), float(p[1])) for p in s if isinstance(p, (list, tuple)) and len(p) >= 2]
+            if len(pts) >= 2:
+                strokes.append(pts)
+        box = obj.get("canvas_box")
+        if isinstance(box, (list, tuple)) and len(box) == 4:
+            box = [int(float(v)) for v in box]
+        else:
+            box = None
+        return strokes, box, "json"
+
+    strokes = []
+    box = None
+    num_re = re.compile(r"-?\d+(?:\.\d+)?")
+    for raw in txt.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("canvas:"):
+            nums = num_re.findall(line.split(":", 1)[1])
+            if len(nums) >= 4:
+                box = [int(float(v)) for v in nums[:4]]
+            continue
+        # 一行可以写多条折线（分号分隔）；每段里数字按 xy 配对
+        for chunk in line.split(";"):
+            nums = num_re.findall(chunk)
+            if len(nums) < 4:
+                continue
+            pts = [(float(nums[i]), float(nums[i + 1]))
+                   for i in range(0, len(nums) - 1, 2)]
+            if len(pts) >= 2:
+                strokes.append(pts)
+    return strokes, box, "text"
+
+
 def ink_report(after_path: str, box, before_path: str | None) -> dict:
     try:
         img = Image.open(after_path)
@@ -496,8 +552,10 @@ def ink_report(after_path: str, box, before_path: str | None) -> dict:
 
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="把图片画进画图（先预览，--draw 才落笔）")
-    ap.add_argument("image", help="图片路径（任意格式先跑 tools/ingest-image.py）")
+    ap = argparse.ArgumentParser(description="把图片/文字折线画进画图（先预览，--draw 才落笔）")
+    ap.add_argument("image", nargs="?", help="图片路径（任意格式先跑 tools/ingest-image.py）")
+    ap.add_argument("--from-plan", default=None,
+                    help="文字计划：plan JSON，或每行 'x,y x,y ...' 的文本（也认 # 注释、canvas:x1,y1,x2,y2）")
     ap.add_argument("--mode", default="line", choices=["line", "sketch", "grid"])
     ap.add_argument("--canvas", default=None, help="'x1,y1,x2,y2' 或 '宽x高'；不给就检测画图窗口")
     ap.add_argument("--margin", type=int, default=24, help="画布内边距 px")
@@ -519,65 +577,108 @@ def main(argv=None) -> int:
     ap.add_argument("--no-window-move", action="store_true", help="兼容参数：永不移动窗口（本工具本来就不移）")
     a = ap.parse_args(argv)
 
-    if not os.path.exists(a.image):
+    if not a.from_plan and not a.image:
+        print(json.dumps({"ok": False, "err": "二选一：给图片路径，或给 --from-plan 文字计划"},
+                         ensure_ascii=False))
+        return 1
+    if a.image and not os.path.exists(a.image):
         print(json.dumps({"ok": False, "err": "图片不存在: %s" % a.image}, ensure_ascii=False))
         return 1
     os.makedirs(INBOX, exist_ok=True)
     ts = time.strftime("%Y%m%d-%H%M%S")
     base = a.out or os.path.join(INBOX, "plan-%s" % ts)
 
-    img = load_rgb(a.image)
-    canvas = None
+    img = None
     paint_hwnd = 0
     before_shot = None
-    if a.canvas:
-        box = parse_canvas(a.canvas)
-        box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
+    plan_box = None
+    strokes_canvas = None
+    strokes_win = None
+
+    if a.from_plan:
+        if not os.path.exists(a.from_plan):
+            print(json.dumps({"ok": False, "err": "计划文件不存在: %s" % a.from_plan},
+                             ensure_ascii=False))
+            return 1
+        strokes_def, plan_box, kind = load_plan_file(a.from_plan)
+        if not strokes_def:
+            print(json.dumps({"ok": False, "err": "计划里没解析出折线（每行至少两个 x,y）",
+                              "file": a.from_plan}, ensure_ascii=False))
+            return 3
+        if plan_box:                       # JSON 里自带画布：坐标已是窗口坐标
+            box = [int(v) for v in plan_box]
+            strokes_win = [[[float(p[0]), float(p[1])] for p in s] for s in strokes_def]
+            strokes_canvas = [[[float(p[0]) - box[0], float(p[1]) - box[1]] for p in s]
+                              for s in strokes_def]
+        else:                              # 文字计划：坐标算画布局部坐标
+            if a.canvas:
+                b = parse_canvas(a.canvas)
+                box = [b[0] + a.margin, b[1] + a.margin, b[2] - a.margin, b[3] - a.margin]
+            elif a.draw:
+                det, paint_hwnd, before_shot = detect_canvas_auto()
+                box = [det[0] + a.margin, det[1] + a.margin, det[2] - a.margin, det[3] - a.margin]
+            else:
+                box = [0, 0, 1000, 1000]
+            strokes_canvas = [[[float(p[0]), float(p[1])] for p in s] for s in strokes_def]
+            strokes_win = [[[p[0] + box[0], p[1] + box[1]] for p in s] for s in strokes_canvas]
         canvas = [box[2] - box[0], box[3] - box[1]]
-    elif a.draw:
-        box, paint_hwnd, before_shot = detect_canvas_auto()
-        box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
-        canvas = [box[2] - box[0], box[3] - box[1]]
+        meta = {"mode": "plan:" + kind, "source": a.from_plan,
+                "strokes": len(strokes_win),
+                "vertices": sum(len(s) for s in strokes_win), "plan_ms": 0}
     else:
-        # 纯预览：默认 1000x1000 画布
-        canvas = [1000, 1000]
-        box = [0, 0, canvas[0], canvas[1]]
+        img = load_rgb(a.image)
+        if a.canvas:
+            box = parse_canvas(a.canvas)
+            box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
+            canvas = [box[2] - box[0], box[3] - box[1]]
+        elif a.draw:
+            box, paint_hwnd, before_shot = detect_canvas_auto()
+            box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
+            canvas = [box[2] - box[0], box[3] - box[1]]
+        else:
+            # 纯预览：默认 1000x1000 画布
+            canvas = [1000, 1000]
+            box = [0, 0, canvas[0], canvas[1]]
 
-    if canvas[0] < 50 or canvas[1] < 50:
-        print(json.dumps({"ok": False, "err": "画布太小", "canvas": canvas}, ensure_ascii=False))
-        return 2
+        if canvas[0] < 50 or canvas[1] < 50:
+            print(json.dumps({"ok": False, "err": "画布太小", "canvas": canvas}, ensure_ascii=False))
+            return 2
 
-    t_plan = time.time()
-    strokes, meta = plan(img, canvas[0], canvas[1], a)
-    meta["plan_ms"] = int((time.time() - t_plan) * 1000)
-    if not strokes:
-        print(json.dumps({"ok": False, "err": "没规划出笔画（阈值太严？图太淡？）",
-                          "meta": meta}, ensure_ascii=False))
-        return 3
+        t_plan = time.time()
+        strokes, meta = plan(img, canvas[0], canvas[1], a)
+        meta["plan_ms"] = int((time.time() - t_plan) * 1000)
+        if not strokes:
+            print(json.dumps({"ok": False, "err": "没规划出笔画（阈值太严？图太淡？）",
+                              "meta": meta}, ensure_ascii=False))
+            return 3
 
-    # 画布局部坐标（预览/比对用），窗口坐标（真画用）
-    strokes_canvas = strokes
-    strokes_win = [[[p[0] + box[0], p[1] + box[1]] for p in s] for s in strokes]
+        # 画布局部坐标（预览/比对用），窗口坐标（真画用）
+        strokes_canvas = strokes
+        strokes_win = [[[p[0] + box[0], p[1] + box[1]] for p in s] for s in strokes]
 
     # 预览 + 计划落盘
     prev = render_preview(strokes_canvas, canvas[0], canvas[1], a.preview_width)
     prev_path = base + "-preview.png"
     prev.save(prev_path, "PNG")
-    # 参考图：把原图按同样比例放进同样大小画布（用于数值比对）
-    sc = min(canvas[0] / float(img.width), canvas[1] / float(img.height))
-    rw, rh = max(2, int(img.width * sc)), max(2, int(img.height * sc))
-    ref = Image.new("RGB", (canvas[0], canvas[1]), (255, 255, 255))
-    ref.paste(img.resize((rw, rh), Image.LANCZOS),
-              ((canvas[0] - rw) // 2, (canvas[1] - rh) // 2))
-    similarity = compare_with_source(ref, prev)
+    similarity = None
+    if img is not None:
+        # 参考图：把原图按同样比例放进同样大小画布（用于数值比对）
+        sc = min(canvas[0] / float(img.width), canvas[1] / float(img.height))
+        rw, rh = max(2, int(img.width * sc)), max(2, int(img.height * sc))
+        ref = Image.new("RGB", (canvas[0], canvas[1]), (255, 255, 255))
+        ref.paste(img.resize((rw, rh), Image.LANCZOS),
+                  ((canvas[0] - rw) // 2, (canvas[1] - rh) // 2))
+        similarity = compare_with_source(ref, prev)
     plan_path = base + "-plan.json"
     with open(plan_path, "w", encoding="utf-8") as f:
-        json.dump({"image": a.image, "mode": a.mode, "canvas_box": box,
-                   "meta": meta, "strokes": strokes_win}, f, ensure_ascii=False)
+        json.dump({"image": a.image or a.from_plan, "mode": meta.get("mode") or a.mode,
+                   "canvas_box": box, "meta": meta, "strokes": strokes_win},
+                  f, ensure_ascii=False)
 
     n_verts = sum(len(s) for s in strokes_win)
     est_s = n_verts * 0.013 + len(strokes_win) * 0.06
-    summary = {"ok": True, "mode": a.mode, "canvas_box": box, "image": {"size": list(img.size)},
+    summary = {"ok": True, "mode": meta.get("mode") or a.mode, "canvas_box": box,
+               "image": ({"size": list(img.size)} if img is not None else None),
                "meta": meta, "strokes": len(strokes_win), "vertices": n_verts,
                "similarity": similarity,
                "preview": prev_path, "plan": plan_path, "draw": bool(a.draw)}

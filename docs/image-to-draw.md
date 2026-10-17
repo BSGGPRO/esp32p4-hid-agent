@@ -51,18 +51,31 @@
 `sketch` 模式在线稿上：pearson 0.73 / IoU 0.69（42 笔 / 492 顶点）；
 `grid` 模式：164 个点（像素质感，不适合细节图）。
 
-## 5. 手机直接把图传过来
+## 5. 图片先转成文字，再文字画（推荐路线，2026-10-18 晚补充）
 
-hub 新增（2026-10-18，不改固件）：
+手机上传页已经撤掉（价值不大，还多一个对外写文件的入口）。更顺的做法是
+**任何能看图的模型/工具把图转成「坐标文字」，交给 `--from-plan` 直接画**：
 
-* `GET /upload` —— 手机/电脑打开的上传页：拍照、选相册、拖拽都行，带进度条，显示落盘路径；
-* `POST /api/upload?name=xxx.png` —— 原始字节上传，存到 `<workspace>\inbox\`，
-  白名单扩展名（png/jpg/jpeg/webp/bmp/gif/tif/tiff/heic/heif/svg/avif/ico/jfif），上限 30 MB；
-* `GET /api/inbox` —— 列出 inbox 最近 20 个文件（name/bytes/mtime）。
+```
+python tools\draw-image.py --from-plan plan.txt               # 只规划出预览
+python tools\draw-image.py --from-plan plan.txt --canvas 0,0,900,900 --draw
+```
 
-手机连同一 Wi-Fi 打开 `http://<PC 的 IP>:8765/upload` 即可。
+`plan.txt` 两种写法（`#` 注释、分号分隔多段、负数/小数都认）：
+
+```
+# 每行一条折线；数字按 x,y 两两配对
+canvas: 24,24,976,976
+100,100 300,100 300,300 100,300 100,100
+450,650 600,650 600,700
+500 300 520 300            # 空格也行
+```
+
+也可以直接喂本工具自己输出的 `plan-*.json`（里面有 `canvas_box` 就连画布位置一起用），
+等于「先预览、后重放、再真画」。
 
 ## 6. 证据
 
 `docs/evidence/image-to-draw-20261018.txt`：多格式 ingest、三种模式的笔画数/相似度、
-上传接口（临时实例 + 真 hub）、页面自检 70/70、6/6 视口。
+页面自检 70/70、6/6 视口；`--from-plan` 文字计划实测（JSON 26 笔重放、
+文本 4 笔/2 笔解析）。

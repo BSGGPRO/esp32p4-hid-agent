@@ -59,10 +59,7 @@
         "GET /api/pc": "本机 stats（页面已不使用，接口保留）",
         "GET /api/health": "hub/板子/透传状态",
         "GET /api/cmd": "不支持；只能 POST",
-        "POST /api/cmd": "白名单 {ping,stats,set,sd_remount,sd_test,mouse_move}；mouse_move 仅允许 dx=dy=0（安全限制），不可用于绘图",
-        "GET /upload": "手机/电脑传图页（拍照、多选、拖拽、进度条）",
-        "POST /api/upload?name=x.png": "原始字节上传到 <workspace>\\inbox\\，白名单扩展名，上限 30 MB",
-        "GET /api/inbox": "列出 inbox 最近 20 个文件（name/bytes/mtime）"
+        "POST /api/cmd": "白名单 {ping,stats,set,sd_remount,sd_test,mouse_move}；mouse_move 仅允许 dx=dy=0（安全限制），不可用于绘图"
       }
     }
   ],
@@ -106,7 +103,9 @@
     "tools/draw-image.py <图> --mode line        # 只规划 + 预览 + 相似度（默认不落笔）",
     "tools/draw-image.py <图> --mode sketch --edge 40",
     "tools/draw-image.py <图> --mode grid --cell 10 --canvas 0,0,600,600",
-    "tools/draw-image.py <图> --mode line --preview-width 4 --draw   # 真画"
+    "tools/draw-image.py <图> --mode line --preview-width 4 --draw   # 真画",
+    "tools/draw-image.py --from-plan plan.txt        # 图片转成坐标文字后直接画",
+    "tools/draw-image.py --from-plan plan.json       # 重放本工具输出的计划"
   ],
   "image_pipeline": {
     "note": "图片 -> 笔画是确定性图像算法（阈值/Sobel -> Zhang-Suen 细化 -> 方向连续性追踪 -> RDP），不需要模型有视觉能力；像不像用 pearson / ink_iou 数值自检",
@@ -117,9 +116,8 @@
       "sketch": "照片/复杂图（铅笔速写）；实测 pearson 0.73 / ink_iou 0.69（42 笔 492 顶点 ~7 s）",
       "grid": "小图标/像素风（按格点墨，164 点 @12px 格）"
     },
+    "text_plan": "tools/draw-image.py --from-plan plan.txt|plan.json：一行一条折线，数字按 x,y 配对，支持 canvas:/分号分多段/注释；适合让能看图的模型先把图转成坐标文字",
     "speed": "约 12 ms/顶点 + 60 ms/笔；上千顶点先看 est_seconds 再决定是否减笔画",
-    "phone_upload": "http://<PC-IP>:8765/upload（手机同 Wi-Fi；照片直接拍/选，落盘路径会显示出来）",
-    "evidence": "docs/evidence/image-to-draw-20261018.txt",
     "doc": "docs/image-to-draw.md"
   },
   "docs": [

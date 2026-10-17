@@ -629,14 +629,6 @@ td.muted { color: var(--muted); }
   line-height: 1.7;
 }
 
-.footer a {
-  color: var(--accent, #7fb2ff);
-  text-decoration: none;
-}
-
-.footer a:hover {
-  text-decoration: underline;
-}
 
 /* ============================================================
    响应式：平板/手机竖屏

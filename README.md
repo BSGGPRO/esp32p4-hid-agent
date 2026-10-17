@@ -51,7 +51,7 @@
 图片→笔画是确定性算法，像不像用数值指标自检）：
 
 ```powershell
-# 1) 收图：剪贴板 / 任意格式文件 / 手机上传（http://<PC-IP>:8765/upload 拍照或选图）
+# 1) 收图：剪贴板 / 任意格式文件（手机照片先存到电脑）
 python tools\ingest-image.py --clipboard
 python tools\ingest-image.py "D:\pic\cat.heic" --thumb 1200
 
@@ -61,10 +61,31 @@ python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4
 
 # 3) 真画（先打开画图，别最大化；会逐笔闭环、用户抢鼠标会抬笔跳过）
 python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4 --draw
+
+# 另一条更省事的路：让能看图的模型把图转成「坐标文字」，直接照文字画
+python tools\draw-image.py --from-plan plan.txt --draw
 ```
 
 实测：猫线稿 26 笔 / 193 顶点 / 约 4 秒，`pearson 0.92` / `ink_iou 0.75`；
 照片速写 42 笔 / 492 顶点 / 约 7 秒。细节见 [`docs/image-to-draw.md`](docs/image-to-draw.md)。
+
+---
+
+## 换电脑 / 带走（便携包）
+
+页面平时由本机 hub（:8765）托管，换一台电脑就没有了。板子没网口、固件也没有
+文件读写命令（只有 `sd_test/sd_remount/sd_format`），所以 PC **写不进板子里的 TF 卡**。
+可行做法是打一个自包含小包（hub + web，纯标准库，约 165 KB），放 TF 卡/U 盘/网盘带走：
+
+```powershell
+python tools\make-portable.py                 # -> <workspace>\portable-esp32p4-web
+python tools\make-portable.py --zip           # 再打个 zip
+python tools\make-portable.py --to-drive E:   # 卡/U 盘已在 E: 时直接拷进去
+```
+
+换电脑后：装 Python 3.9+（勾 Add python.exe to PATH）→ 双击 `start-dashboard.bat`
+→ 打开 http://127.0.0.1:8765/ 。启动脚本用 `--serial auto` 自动识别 CH340，COM 号变了也不用改。
+细节见 [`docs/web-dashboard.md`](docs/web-dashboard.md) §11。
 
 ---
 

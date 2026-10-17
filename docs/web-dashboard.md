@@ -256,9 +256,6 @@ TF 卡卡片下方有一张「动态调频（DFS）」卡片，数据来自 `sta
 |---|---|
 | `GET /api/health` | `{"ok":true,"board":{state,serial_open,passthrough,...},"pc_ready":bool,"tcp_passthrough_port":N}` |
 | `GET /api/shutdown` | 仅 127.0.0.1/::1；返回 `{"ok":true,"bye":true}` 后进程优雅退出 |
-| `GET /api/inbox` | 列出上传目录最近 20 个文件（`name/bytes/mtime`）+ `dir/count` |
-| `GET /upload` | 手机/电脑上传页（`web/upload.html`） |
-| `POST /api/upload?name=x.png` | 原始字节上传到 `<workspace>\inbox\`，见 5.6 |
 | `OPTIONS *` | 204 + CORS 头（`Access-Control-Allow-Origin: *`），便于外部工具调试 |
 | 其它 GET | 静态文件（`web/` 目录，路径穿越已防护），未知路径 404 JSON |
 
@@ -298,27 +295,12 @@ Content-Type: application/json
 板子离线/被透传占用时返回 `{"ok":false,"err":"board_offline"|"passthrough_active"|"board_busy"}`，
 页面据此回滚开关并提示，不会假装成功。
 
-### 5.6 `POST /api/upload`（手机传图给 AI）
+### 5.6 已移除：手机传图接口（2026-10-18 当天撤掉）
 
-给「用户发图片让 AI 画」用的入口，2026-10-18 新增，**不改固件、不影响串口**：
-
-```
-POST /api/upload?name=photo.jpg
-Content-Type: application/octet-stream
-<文件原始字节>
-```
-
-| 项 | 规则 |
-|---|---|
-| 落盘 | `<workspace>\inbox\upload-<时间戳>-<安全文件名>` |
-| 扩展名白名单 | `.png .jpg .jpeg .webp .bmp .gif .tif .tiff .heic .heif .svg .avif .ico .jfif` |
-| 大小上限 | 30 MB（超了 413 `too_large`） |
-| 文件名 | 只取 basename、非法字符替换成 `_`、截断 64 字符（防路径穿越） |
-| 成功响应 | `{"ok":true,"path":"...","bytes":N,"name":"..."}` |
-
-页面 `web/upload.html`（`GET /upload`）就是调这个接口：手机拍照/相册多选、电脑拖拽、
-带上传进度条，成功后把落盘**绝对路径**显示出来——把那一行发给 AI，它就能
-`python tools\ingest-image.py <路径>` 接着画。
+曾加过 `GET /upload` + `POST /api/upload` + `GET /api/inbox` 给手机传图用，
+但实际价值不大：把图片描述成「坐标文字」再交给 `tools\draw-image.py --from-plan`
+更直接，也少一个对外写文件的入口。已从 hub / 页面 / 文档里全部删掉
+（需要时可从 git 历史 `06cdfd0` 取回）。
 
 ---
 
@@ -422,8 +404,7 @@ Content-Type: application/octet-stream
 | `web/index.html` | 页面骨架（板子面板 + 本机面板），文件名固定，相对路径引用 `app.js`/`style.css` |
 | `web/app.js` | 轮询、渲染、canvas 仪表/曲线、超时与离线态（纯原生 JS，无构建） |
 | `web/style.css` | 暗色主题、手机竖屏自适应（媒体查询/流式布局） |
-| `web/upload.html` | 手机/电脑传图页（拍照、多选、拖拽、进度条、显示落盘路径） |
-| `pc/hub.py` | HTTP + 静态页 + 板子串口采集 + 本机采集 + TCP 透传 + 上传（标准库，零第三方依赖） |
+| `pc/hub.py` | HTTP + 静态页 + 板子串口采集 + 本机采集 + TCP 透传（标准库，零第三方依赖） |
 | `pc/transport_uart.py` | 复用其 DCB/COMMTIMEOUTS 结构与端口名规范化（hub 自己管常驻句柄） |
 | `tools/board_lock.py` | 串口跨进程互斥锁（hub 进程级持有） |
 | `docs/evidence/web-selftest.py` | 自检脚本（`web-*` 证据命名） |
@@ -512,3 +493,35 @@ python tools/web-layout-check.py --url http://127.0.0.1:8765/
 - 实测：`held by web-ui:hub` 死 pid 64416 → `status` 报
   `"stale": true, "stale_reason": "holder pid 64416 is dead"`；`acquire` 立即破锁成功，
   hub 重启后板子恢复在线（`ok=true`）。
+
+---
+
+## 11. 便携包：放 TF 卡 / U 盘，换电脑也能开（2026-10-18）
+
+**问题**：页面现在由这台 PC 的 hub（:8765）托管，换一台电脑就没有了。
+**约束（如实说）**：板子没有网口，C6 Wi-Fi 方案已放弃；固件只有
+`sd_test` / `sd_remount` / `sd_format`，**没有文件读写命令**，
+所以 PC 既不能把文件写进板子里的 TF 卡，板子也没法自己发网页。
+
+**做法**：把「hub + web」打成一个不依赖仓库的自包含小包（纯标准库），
+放 TF 卡/U 盘/网盘上；换电脑时拷出来双击 `start-dashboard.bat` 即可。
+
+```powershell
+python tools\make-portable.py                 # 生成 <workspace>\portable-esp32p4-web
+python tools\make-portable.py --zip           # 再打个 zip（约 50 KB）
+python tools\make-portable.py --to-drive E:   # 卡/盘已在 E: 时直接拷进去
+```
+
+包内容（11 个文件 / 约 165 KB）：`pc/hub.py`、`pc/transport_uart.py`、
+`pc/transport_base.py`、`tools/board_lock.py`、`web/*`、
+`start-dashboard.bat`、`stop-dashboard.bat`、`README.txt`。
+
+* 启动脚本用 `--serial auto`：hub 新增自动识别（`transport_uart.detect_port()`，
+  CH340 VID_1A86:PID_7523），**换电脑 COM 号变了也不用改**。
+  实测：`--serial auto` → `串口自动识别 -> COM7（1A86:7523）`。
+* 新电脑只需要 Python 3.9+（安装时勾选 Add python.exe to PATH），不装第三方包。
+* 包内 hub 单独起在 8798 验证过：`/api/health` ok、`/`、`/style.css`、`/app.js`、
+  `/favicon.svg` 全 200。
+
+**仍然做不到的**：板子自己当 Web 服务器（需要改固件加网络 + 文件服务，违反
+「别动固件代码」，且工作量/风险都大，不做）。
