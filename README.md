@@ -175,6 +175,10 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 8. **大脑层还不能闭环自纠**：`read_text` 在部分应用（Win11 记事本）读不全，`ctrl+a` 不选中；只靠 `wins`+`read_text` 的文本模型拿不到控件级信息，需要接 UI Automation 或加 OCR。
 9. **Win+R 自动补全**：打 `notepad` 可能被补成上次的完整命令（曾差点把字打进 README.md）。任何盲打前必须 `wins` 验证前台标题。
 10. **仅图片可验证项**：三个 Type-C 口的一一对应、1 A 保险丝、双口供电接法、下载模式的物理实现方式 —— 本 AI 无视觉能力，未复核原理图，见 hardware-facts §2/§6.2/§1.5。
+11. **修饰键可能卡在"按下"状态**：HID 键盘只发了按下、没发抬起（脚本崩了 / 设备重置 / 别的软件只按不抬），
+    表现是**滚轮只缩放不滚动、点击变多选、拖拽变框选**。一行修复：
+    `python tools\hid-panic.py`（板子 `release_all` + Windows 侧 SendInput 补发所有修饰键/鼠标键抬起 + 复查）。
+    2026-10-18 实遇到过一次（左 Ctrl 卡住），已修复并做成工具。
 
 ---
 
