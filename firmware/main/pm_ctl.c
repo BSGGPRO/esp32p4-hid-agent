@@ -12,6 +12,8 @@
 #include "pm_ctl.h"
 
 #include "cJSON.h"
+#include "esp_clk_tree.h"
+#include "esp_cpu.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "sdkconfig.h"
@@ -32,6 +34,21 @@ static uint32_t s_boosts;
 static uint32_t s_last_gap_ms; /* quiet period before the most recent activity */
 static uint32_t s_downs;
 static pm_reason_t s_last_reason = PM_REASON_BOOT;
+
+/* Physical CPU frequency evidence (protocol.md §10.4).
+ *
+ * `freq_now_mhz` is what the PM framework records as the current CPU clock.
+ * `measured_mhz` is an INDEPENDENT measurement: the mcycle counter delta over
+ * the esp_timer delta between two 25 ms ticks.  It is only sampled in ticks
+ * where no boost lock is held (i.e. after the lock was released), because
+ * while the governor holds the lock the CPU is at 360 MHz by construction and
+ * measuring it would prove nothing about downclocking. */
+static uint32_t s_last_cycles;
+static uint64_t s_last_tick_us;
+static uint32_t s_measured_mhz; /* most recent lock-free window, 0 = no sample */
+static bool s_have_measured;
+static uint32_t s_freq_now_mhz;
+
 
 #if CONFIG_PM_ENABLE
 static esp_pm_lock_handle_t s_lock;
@@ -225,6 +242,28 @@ uint32_t pm_ctl_last_gap_ms(void)
 
 void pm_ctl_tick(void)
 {
+    /* --- physical frequency measurement, independent of the governor --- */
+    const uint64_t now_us = (uint64_t)esp_timer_get_time();
+    const uint32_t cycles = (uint32_t)esp_cpu_get_cycle_count();
+    uint32_t cur_hz = 0;
+    if (esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED,
+                                     &cur_hz) == ESP_OK) {
+        s_freq_now_mhz = (uint32_t)(cur_hz / 1000000u);
+    }
+    if (s_last_tick_us != 0 && now_us > s_last_tick_us) {
+        const uint32_t dcycles = cycles - s_last_cycles; /* wrap-safe */
+        const uint64_t dus = now_us - s_last_tick_us;
+        if (!s_lock_held && s_io_holds == 0 && dus > 0) {
+            const uint64_t mhz = (uint64_t)dcycles / dus; /* cycles / µs = MHz */
+            if (mhz > 0 && mhz < 1000) {
+                s_measured_mhz = (uint32_t)mhz;
+                s_have_measured = true;
+            }
+        }
+    }
+    s_last_cycles = cycles;
+    s_last_tick_us = now_us;
+
     if (!s_adaptive) {
         return;
     }
@@ -256,4 +295,10 @@ void pm_ctl_fill_json(struct cJSON *pm)
     cJSON_AddNumberToObject(pm, "boosts", (double)s_boosts);
     cJSON_AddNumberToObject(pm, "downs", (double)s_downs);
     cJSON_AddStringToObject(pm, "last_reason", reason_name(s_last_reason));
+    cJSON_AddNumberToObject(pm, "freq_now_mhz", (double)s_freq_now_mhz);
+    if (s_have_measured) {
+        cJSON_AddNumberToObject(pm, "measured_mhz", (double)s_measured_mhz);
+    } else {
+        cJSON_AddNullToObject(pm, "measured_mhz");
+    }
 }

@@ -81,5 +81,13 @@ uint32_t pm_ctl_idle_ms(void);
  */
 uint32_t pm_ctl_last_gap_ms(void);
 
-/** @brief Fill a JSON object with the current governor state (stats.pm). */
+/**
+ * @brief Fill a JSON object with the current governor state (stats.pm).
+ *
+ * Beyond the governor bookkeeping this also exposes physical frequency
+ * evidence:
+ *   - `freq_now_mhz`: PM framework's current CPU frequency;
+ *   - `measured_mhz`: mcycle/timer delta sampled in the most recent tick that
+ *     ran WITHOUT holding the boost lock (null before the first such tick).
+ */
 void pm_ctl_fill_json(struct cJSON *pm);

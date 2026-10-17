@@ -131,7 +131,7 @@
 | `mem.psram_*` | PSRAM 堆 free / total，单位字节；未启用 PSRAM 时为 0 |
 | `temp_c` | （v1.2 新增，可选，§10.4）ESP32-P4 内部温度传感器读数，单位 °C，保留 1 位小数；传感器不可用时为 `null` |
 | `temp_warn` | （v1.2 新增，可选，§10.4）最近一次读数 ≥ 告警阈值（默认 70 °C） |
-| `pm` | （v0.2 追加，可选，§10.4）省电调度状态：`{governor:"fixed360" \| "adaptive", dfs:bool, min_mhz, max_mhz, cur_mhz, idle_ms, boosts, downs, last_reason}`。`idle_ms` = 本次命令到达前的静默时长；`downs>0` 证明真的降过频；老客户端可忽略整个对象 |
+| `pm` | （v0.2 追加，可选，§10.4）省电调度状态：`{governor:"fixed360" \| "adaptive", dfs:bool, min_mhz, max_mhz, cur_mhz, idle_ms, boosts, downs, last_reason, freq_now_mhz, measured_mhz}`。`idle_ms` = 本次命令到达前的静默时长；`downs>0` 证明锁真的释放过；`measured_mhz` = 最近一个**未持锁**的 25 ms tick 里 mcycle/µs 独立测得的 MHz（物理降频证据，fixed360 下 359–360，adaptive 空闲时实测 83）；`freq_now_mhz` = PM 框架记录的当前频率（**执行命令时恒为 360，不能单独当降频证据**）；老客户端可忽略整个对象 |
 | `tasks[]` | `uxTaskGetSystemState()` 全量快照；`state` ∈ `running/ready/blocked/suspended/deleted`；`stack_hwm` 单位**字节**（本 port 的 `StackType_t` 是 `uint8_t`） |
 | `sd` | §3.7 的 TF 卡状态；`err` 为 `null` 表示挂载成功，否则是 `<阶段>:<esp_err_name>`（如 `card_init:ESP_ERR_TIMEOUT` / `mount:ESP_FAIL` / `exfat_not_supported`） |
 | `sd.fs` | **从原始 boot sector 判定**：`"fat32"` / `"exfat"` / `"unknown"`（FAT12/16 也归 `unknown`，因为字段只允许这三个值） |
@@ -444,6 +444,29 @@ tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, buttons, dx, dy, wheel, pan);
    `{"cmd":"set","id":1,"key":"temp_warn_c","value":70}`、`{"cmd":"set","id":2,"key":"temp_throttle_c","value":80}`（20–100 °C，须 warn < throttle）。
 6. **失败安全**：任何 `esp_pm_configure` 失败 → 释放锁、回退 fixed360、`set` 返回 `{"ok":false,...,"detail":"pm_configure_failed"}`，绝不停在半配置状态。
 7. **不做的事**：不轮询 TF 卡（`stats` 只读挂载时缓存的 `s_status`，无 SD 事务）；日志保持 `ESP_LOG_NONE`；无忙等。
+
+### 10.4.1 物理频率证据（`measured_mhz` / `freq_now_mhz`，2026-10-18 补）
+
+`downs` 只能证明"boost 锁被释放"，不能证明 CPU 真的降频。为回答"这个开关是不是真有效"，固件在 `hid_mon` 的 25 ms tick 里加了两个字段：
+
+- `freq_now_mhz`：`esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, CACHED)` 读到的 PM 记录频率。**它只在有任务运行时采样，所以恒为 360**（PM 在有任务就绪时会先把频率拉到 max），单独看会得出"没降频"的错误结论。
+- `measured_mhz`：同一个 tick 里 `esp_cpu_get_cycle_count()`（RISC-V `cycle` CSR，P4 rev1.3 可用）的增量 ÷ `esp_timer_get_time()` 的增量（cycles/µs = MHz），**只在不持有 boost 锁、且没有 SD/IO 长操作的 tick 里更新**。它测的是"最近一个无锁窗口"的真实平均频率。
+
+实测（`docs/evidence/fw-pm-physical-mhz.txt`，直连 COM7，不走 hub 以免 1 Hz 轮询每秒 boost 一次）：
+
+| 状态 | `measured_mhz` | `freq_now_mhz` |
+|---|---|---|
+| `dfs=0` 空闲 10 s（×3） | **359 / 360 / 360** | 360 |
+| `dfs=1` 空闲 10 s（×3） | **83 / 83 / 83** | 360 |
+| `dfs=1` 连续 ping 后 | 83（上一无锁窗口值，活动期持锁不采样） | 360 |
+| `set dfs=0` 恢复后空闲 | **360** | 360 |
+
+`83` 不是错误：25 ms 窗口内 CPU 先以 360 MHz 跑完 tick/中断处理（约 13% 时间），其余时间停在 40 MHz，时间加权平均 ≈ 83 MHz（40 + 320×0.134）。压平为单一整数的原因见下条。
+
+**踩坑记录（重要，不要再踩）**：
+1. `dcycles*1000/dus` 是错的量纲（24.99 ms 窗口会得到 360000），正确是 `dcycles/dus`；前者会被合理性过滤丢掉，表现为 `measured_mhz` 恒 `null`。
+2. **任何 FreeRTOS idle hook 返回 `false` 都会让 `esp_system/freertos_hooks.c` 直接 `return`，跳过 `esp_pm_impl_idle_hook()` —— 而后者才是释放 RTOS idle 锁、切到 40 MHz 的地方，等于彻底禁用 DFS。** 曾用 idle-hook 吞吐当频率代理时踩过：加了一个 `return false` 的 hook，测出 fixed360/adaptive 下空闲吞吐恒为 955k（一模一样），差点误判"DFS 无效"；真相是 DFS 被自己关了。最终实现**不再注册任何 idle hook**，只读 mcycle。
+3. `esp_clk.h` / `esp_clk_cpu_freq()` 在 IDF 5.5.6 不可用，等价物是 `esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU, ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &hz)`。
 
 ### 10.5 测试纪律：禁止向宿主桌面注入键鼠输出（2026-10-17 事故后定规）
 
