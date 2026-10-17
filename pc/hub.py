@@ -541,6 +541,53 @@ class BoardLink:
             return dict(base, ok=False, err="board_no_stats", detail=self.detail)
         return dict(base, ok=False, err="board_offline", detail=self.detail)
 
+    # -- 网页按钮发命令（/api/cmd）------------------------------------------
+    def send_command(self, payload: dict, timeout: float = 6.0) -> dict:
+        """把一条 JSON 命令发给板子并等它的响应。
+
+        与 stats 轮询用同一把 _poll_lock 串行化，避免两条请求同时在线上打架。
+        返回板子的原始响应 dict；失败时返回 {"ok": false, "err": ...}。
+        """
+        if self.passthrough:
+            return {"ok": False, "err": "passthrough_active",
+                    "detail": "板子正在被 pc/brain.py 透传占用，请先断开"}
+        if not self.serial_open or self._serial is None:
+            return {"ok": False, "err": "board_offline"}
+        if not self._poll_lock.acquire(timeout=2.0):
+            return {"ok": False, "err": "board_busy", "detail": "stats 轮询占用中，请重试"}
+        try:
+            link = self._serial
+            if link is None or not self.serial_open:
+                return {"ok": False, "err": "board_offline"}
+            with self._state_lock:
+                pid = self._next_id
+                self._next_id += 1
+                self._pending_id = pid
+                self._pending = None
+                self._resp_event.clear()
+            body = dict(payload)
+            body["id"] = pid
+            try:
+                link.write(json.dumps(body, ensure_ascii=False,
+                                      separators=(",", ":")).encode() + b"\n")
+            except SerialError as exc:
+                self._close_serial()
+                return {"ok": False, "err": "serial_write_failed", "detail": str(exc)}
+            deadline = time.monotonic() + timeout
+            resp = None
+            while time.monotonic() < deadline and not self._stop.is_set():
+                if self._resp_event.wait(0.02):
+                    resp = self._pending
+                    break
+            with self._state_lock:
+                self._pending_id = None
+                self._pending = None
+            if resp is None:
+                return {"ok": False, "err": "timeout", "timeout_s": timeout}
+            return resp
+        finally:
+            self._poll_lock.release()
+
     # -- TCP 透传支撑 -----------------------------------------------------
     def write_serial(self, data: bytes) -> None:
         link = self._serial
@@ -1226,7 +1273,7 @@ class HubHandler(BaseHTTPRequestHandler):
 
     def _cors_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Access-Control-Max-Age", "86400")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
@@ -1286,6 +1333,52 @@ class HubHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": "internal", "detail": str(exc)})
             except Exception:
                 pass
+
+    # -- 网页按钮：POST /api/cmd（白名单命令）-----------------------------
+    CMD_WHITELIST = {"ping", "stats", "set", "sd_remount", "sd_test"}
+
+    def do_POST(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path not in ("/api/cmd", "/api/cmd/"):
+            self._send_json(404, {"ok": False, "err": "not_found", "path": path})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            if len(raw) > 8192:
+                self._send_json(413, {"ok": False, "err": "too_large"})
+                return
+            payload = json.loads(raw.decode("utf-8", "replace") or "{}")
+            if not isinstance(payload, dict):
+                raise ValueError("body must be a JSON object")
+        except Exception as exc:
+            self._send_json(400, {"ok": False, "err": "bad_json", "detail": str(exc)})
+            return
+        cmd = str(payload.get("cmd") or "")
+        if cmd == "sd_format":
+            client = self.client_address[0] if self.client_address else ""
+            if client not in ("127.0.0.1", "::1"):
+                self._send_json(403, {"ok": False, "err": "loopback_only"})
+                return
+            if payload.get("confirm") != "ERASE":
+                self._send_json(400, {"ok": False, "err": "missing_confirm"})
+                return
+        elif cmd not in self.CMD_WHITELIST:
+            self._send_json(400, {"ok": False, "err": "cmd_not_allowed", "cmd": cmd,
+                                  "allowed": sorted(self.CMD_WHITELIST)})
+            return
+        board = HubHandler.board
+        if board is None:
+            self._send_json(503, {"ok": False, "err": "board_offline"})
+            return
+        timeout = 15.0 if cmd in ("sd_test", "sd_format") else 8.0
+        try:
+            resp = board.send_command(payload, timeout=timeout)
+        except Exception as exc:
+            LOG.error("/api/cmd 异常：%s\n%s", exc, traceback.format_exc())
+            self._send_json(500, {"ok": False, "err": "internal", "detail": str(exc)})
+            return
+        self._send_json(200, resp)
 
     def _handle_health(self) -> None:
         board = HubHandler.board
@@ -1426,7 +1519,7 @@ def print_banner(args, httpd: ThreadingHTTPServer, hub: Hub) -> None:
     print(" 页面      : http://127.0.0.1:%d/" % port)
     for ip in ips:
         print(" 手机访问  : http://%s:%d/" % (ip, port))
-    print(" 接口      : /api/board  /api/pc  /api/health  /api/shutdown(仅本机)")
+    print(" 接口      : /api/board  /api/pc  /api/health  /api/cmd(POST)  /api/shutdown(仅本机)")
     print(" 板子串口  : %s（常驻 115200 8N1，每秒 stats）" % args.serial)
     print(" TCP 透传  : %s:%d <-> %s（给 pc/brain.py 用，一次一个客户端）"
           % (args.tcp_host, hub.tcp_bound_port or args.tcp_port, args.serial))

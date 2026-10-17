@@ -668,3 +668,69 @@ td.muted { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {
   .bar-fill, .core-fill { transition: none; }
 }
+
+/* ---- 动态调频（DFS）开关 ---- */
+.pm-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 10px;
+}
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 46px;
+  height: 26px;
+  flex: 0 0 auto;
+}
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  border-radius: 999px;
+  background: #334155;
+  border: 1px solid #475569;
+  transition: background .18s ease, border-color .18s ease;
+}
+.switch-slider::before {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  left: 2px;
+  top: 2px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  transition: transform .18s ease;
+}
+.switch input:checked + .switch-slider {
+  background: #0ea5e9;
+  border-color: #38bdf8;
+}
+.switch input:checked + .switch-slider::before {
+  transform: translateX(20px);
+}
+.switch input:disabled + .switch-slider {
+  opacity: .45;
+  cursor: not-allowed;
+}
+.pm-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pm-text b {
+  font-size: 13px;
+  color: #e2e8f0;
+}
+.pm-text small {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}

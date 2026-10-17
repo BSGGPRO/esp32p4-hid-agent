@@ -29,6 +29,8 @@
   var PC_TIMEOUT_MS = 2500;
   var STALE_MS = 3200;             // 超过这个时间没新数据 = 数据超时（标灰）
   var HISTORY_LEN = 120;           // 双核曲线保留最近 120 个采样点
+  var API_CMD = 'api/cmd';         // POST：网页按钮 -> hub -> 板子
+  var pmSending = false;           // 动态调频开关切换中（避免被轮询回写覆盖）
 
   var BOARD_ERR_TEXT = {
     board_offline: '板子离线',
@@ -216,6 +218,20 @@
         clearTimeout(timer);
       }
       throw err;
+    });
+  }
+
+  // 发一条命令给板子（hub 的 POST /api/cmd，白名单命令）
+  function sendBoardCmd(payload) {
+    return fetch(API_CMD, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().catch(function () {
+        return { ok: false, err: 'bad_response', detail: 'HTTP ' + res.status };
+      });
     });
   }
 
@@ -515,6 +531,44 @@
     }
     setText('sd-write', fmtKbps(sd.speed_write_kbps));
     setText('sd-read', fmtKbps(sd.speed_read_kbps));
+
+    // 动态调频开关（v1.2 可选字段 stats.pm；固件没上报时开关禁用并说明）
+    var pm = stats.pm || {};
+    var pmKnown = pm.dfs === true || pm.dfs === false;
+    var pmOn = pm.dfs === true;
+    var pmToggle = $('pm-toggle');
+    if (pmToggle && !pmSending) {
+      pmToggle.checked = pmOn;
+      pmToggle.disabled = !pmKnown;
+    }
+    setText('pm-state', !pmKnown ? '固件未上报' : (pmOn ? '已开启' : '已关闭'));
+    var pmStateEl = $('pm-state');
+    toggleClass(pmStateEl, 'good', pmKnown && !pmOn);
+    toggleClass(pmStateEl, 'warn', pmKnown && pmOn);
+    setText('pm-title', !pmKnown ? '当前固件不支持切换'
+      : (pmOn ? '省电模式 · 动态调频' : '稳定模式 · 固定 360MHz'));
+    if (!pmKnown) {
+      setText('pm-hint', '固件升级到带 pm 字段的版本后，这个开关才能用。');
+    } else if (pmOn) {
+      setText('pm-hint', '空闲时自动降频省电；若出现鼠标断续或卡异常，请关掉。');
+    } else {
+      setText('pm-hint', '固定 360MHz，SD 卡与 USB 最稳；发热实测约 24°C，无需担心。');
+    }
+    setText('pm-cur', pm.cur_mhz ? fmtMhz(pm.cur_mhz) : fmtMhz(cpu.mhz));
+    setText('pm-range', pm.min_mhz && pm.max_mhz
+      ? fmtMhz(pm.min_mhz) + ' – ' + fmtMhz(pm.max_mhz)
+      : '—');
+    setText('pm-gov', !pmKnown ? '—'
+      : (pm.governor === 'adaptive' ? '智能调度' : '固定 360'));
+    if (!pmKnown || pm.boosts === undefined) {
+      setText('pm-counts', '—');
+    } else {
+      var counts = '升 ' + (pm.boosts || 0) + ' / 降 ' + (pm.downs || 0);
+      if (pm.last_reason) {
+        counts += ' · 上次：' + pm.last_reason;
+      }
+      setText('pm-counts', counts);
+    }
 
     // 网络
     var netState = $('net-state');
@@ -1021,9 +1075,34 @@
       });
     }
 
+    // 动态调频开关：POST /api/cmd -> hub -> 板子 set pm/dfs
+    var pmToggle = $('pm-toggle');
+    if (pmToggle) {
+      pmToggle.addEventListener('change', function () {
+        var want = pmToggle.checked;
+        pmSending = true;
+        pmToggle.disabled = true;
+        setText('pm-state', '切换中…');
+        sendBoardCmd({ cmd: 'set', key: 'dfs', value: want ? 1 : 0 }).then(function (resp) {
+          if (resp && resp.ok) {
+            setText('pm-hint', '已切换到' + (want ? '省电模式（动态调频）' : '稳定模式（固定 360MHz）') + '。');
+            pollBoard();
+          } else {
+            pmToggle.checked = !want;
+            setText('pm-hint', '切换失败：' + ((resp && (resp.err || resp.detail)) || '未知错误'));
+          }
+        }, function (err) {
+          pmToggle.checked = !want;
+          setText('pm-hint', '切换失败：' + (err && err.message ? err.message : err));
+        }).then(function () {
+          pmSending = false;
+          pmToggle.disabled = false;
+        });
+      });
+    }
+
     var sortCpu = $('sort-cpu');
-    var sortMem = $('sort-mem');
-    if (sortCpu) {
+    var sortMem = $('sort-mem');    if (sortCpu) {
       sortCpu.addEventListener('click', function () {
         state.procSort = 'cpu';
         toggleClass(sortCpu, 'chip-active', true);

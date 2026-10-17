@@ -135,6 +135,28 @@
             </div>
           </div>
 
+          <div class="card" id="pm-card">
+            <div class="card-head"><h3>动态调频（DFS）</h3><span id="pm-state" class="hint">—</span></div>
+            <div class="pm-row">
+              <label class="switch" title="开启：空闲时自动降频省电；关闭：固定 360MHz（稳定优先）">
+                <input id="pm-toggle" type="checkbox" disabled />
+                <span class="switch-slider" aria-hidden="true"></span>
+              </label>
+              <div class="pm-text">
+                <b id="pm-title">稳定模式 · 固定 360MHz</b>
+                <small id="pm-hint">默认关闭动态调频：卡/USB 更稳；开了可能省电但偶发不稳。</small>
+              </div>
+            </div>
+            <div class="kv-grid">
+              <div class="kv"><span class="k">调度器</span><b id="pm-gov" class="v">—</b></div>
+              <div class="kv"><span class="k">升 / 降频</span><b id="pm-counts" class="v">—</b></div>
+            </div>
+            <div class="kv-grid">
+              <div class="kv"><span class="k">当前频率</span><b id="pm-cur" class="v">—</b></div>
+              <div class="kv"><span class="k">频率范围</span><b id="pm-range" class="v">—</b></div>
+            </div>
+          </div>
+
           <div class="card">
             <div class="card-head"><h3>网络</h3><span id="net-state" class="hint">—</span></div>
             <div class="kv-grid">
