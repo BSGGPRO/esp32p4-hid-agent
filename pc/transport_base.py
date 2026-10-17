@@ -31,10 +31,11 @@ from __future__ import annotations
 
 import time
 
-#: protocol.md §1：单行 ≤ 512 字节
-MAX_LINE_BYTES = 512
+#: protocol.md v1.2 §10.1：单行上限。v1.2 的 stats 响应实测约 1.2 KB
+#: （9 个任务 + SD/net/mem 字段），旧的 512 B 会把 stats 整行丢掉，故提到 8192。
+MAX_LINE_BYTES = 8192
 #: 行缓冲上限：超过仍无换行则判定为 ROM 乱码，整体丢弃（防止乱码撑爆内存）
-MAX_BUFFER_BYTES = 8192
+MAX_BUFFER_BYTES = 65536
 
 
 class TransportError(RuntimeError):
