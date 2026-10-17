@@ -435,3 +435,54 @@ Content-Type: application/json
 真机 `docs/evidence/web-board-online.py` 22/22 PASS（stats + 8766 ping/stats 往返）。
 **注意**：修复在 hub 进程启动时加载，改完代码需重启 hub 生效（`curl http://127.0.0.1:8765/api/shutdown` 后再启动）。
 
+
+### 10.2 2026-10-18：页面单栏化 + 全端适配 + 后台不再弹 CMD
+
+**1) 本机面板移除后的布局适配（页面只剩板子面板）**
+
+| 问题 | 修复 |
+|---|---|
+| `.grid` 仍是两列（`1.18fr 0.82fr`），单面板只占约 59% 宽，右侧大片空白 | 改为 `grid-template-columns: minmax(0, 1fr)` 单栏满宽 |
+| 板子内 `.cards-2` 固定 2 列，宽屏下每张卡被拉到 700+ px，很空 | 改为 `repeat(auto-fit, minmax(280px, 1fr))`：宽屏 4 列 / 平板 2 列 / 手机 1 列 |
+| DFS 开关 46×26 px，手机上偏小不好点 | 放大到 52×30，圆钮 24 px，触控目标 ≥ 28 px |
+| 浏览器请求 `/favicon.ico` 返回 404（页面 console 里一条报错） | 新增本地 `web/favicon.svg`（内联图形，无外网依赖）并在 `<head>` 引用 |
+
+**2) 全端适配与页面功能自检（新工具）**
+
+```bash
+python tools/web-layout-check.py --url http://127.0.0.1:8765/
+# headless Edge + CDP，纯标准库；退出码 0 = 全过
+```
+
+- 视口：1920×1080 / 1440×900 / 1024×768 / 820×1180 / 390×844 / 360×740，全部 **PASS**；
+- 每个视口断言：无横向溢出、板子面板填充率 ≥ 92%、关键元素可见、
+  无元素越界、无 console error / 未捕获异常 / 资源 404、触控目标 ≥ 28 px；
+- 功能段（真实点击）：读 `api/board` → 点 DFS 开关 → 后端 governor 变 `adaptive`、
+  UI 与后端一致、提示文案更新、`measured_mhz` 变成 83 → 再点回 `fixed360` →
+  点刷新按钮 → 页面仍在线。**全部 PASS**；
+- 回归：`docs/evidence/web-selftest.py` **70/70 PASS**。
+
+**3) Windows 老弹 CMD 窗口（根因与修复）**
+
+- 根因：后台是计划任务跑的 —— `dsh-hub` 直接跑 `start-hub.cmd`、旧 `dsh-hub-watch` 每分钟跑
+  `powershell.exe`，两者都会在用户会话里创建**可见的控制台窗口**，所以每分钟闪一下；
+  另外 00:28 启动的旧 hub 还留了一个可见 `cmd` 窗口在桌面上。
+- 修复：
+  - 两个任务都改成 `wscript.exe //B "C:\ProgramData\dsh\run-hidden.vbs" "<脚本>.cmd"`，
+    VBS 用 `WScript.Shell.Run(..., 0, False)` 以**隐藏窗口**方式拉起；
+  - 看门狗改用 Python 重写（`C:\ProgramData\dsh\watchdog-hub.py`）并由 `pythonw.exe` 运行，
+    彻底没有控制台（旧 PowerShell 看门狗脚本已废弃）；
+  - 删掉遗留任务 `dsh-soak`、`dsh-preview`；旧的可见 `cmd`+`python`（hub）进程已终止并按隐藏方式重启；
+  - 实测：看门狗跑完一轮后枚举桌面窗口，`cmd/powershell/python/conhost` **可见窗口 0 个**。
+
+**4) 顺手修掉的真 bug：僵尸板子锁把 hub 卡死 15 分钟**
+
+- 现象：hub 被强杀后 `.board.lock` 残留（`pid` 已不存在），新 hub 一直报
+  `board_busy: 板子锁被占用 ... for 812s`，最长要等 `STALE_SECONDS=900` 才自愈。
+- 修复（`tools/board_lock.py`）：新增 `_pid_alive()`（Windows 用 `OpenProcess` +
+  `GetExitCodeProcess`，**不**用有杀进程语义的 `os.kill`）与 `_is_stale()`：
+  锁持有者进程已死且超过 3 s 宽限 → 立即判为僵尸锁并抢占；`status()` 现在返回
+  `stale / stale_reason / holder_alive`。
+- 实测：`held by web-ui:hub` 死 pid 64416 → `status` 报
+  `"stale": true, "stale_reason": "holder pid 64416 is dead"`；`acquire` 立即破锁成功，
+  hub 重启后板子恢复在线（`ok=true`）。

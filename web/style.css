@@ -152,9 +152,10 @@ code {
 .btn-small { padding: 8px 12px; font-size: 12.5px; }
 
 /* ---------------- 主网格 ---------------- */
+/* 页面只剩板子面板（2026-10-18 移除本机面板），单栏占满宽度 */
 .grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.18fr) minmax(0, 0.82fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
@@ -169,7 +170,6 @@ code {
 }
 
 .panel-board { --accent: var(--cyan); }
-.panel-pc { --accent: var(--violet); }
 
 .panel-head {
   display: flex;
@@ -319,7 +319,8 @@ code {
 
 .cards-2 {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* 单栏布局后按可用宽度自适应：宽屏 4 列、平板 2 列、手机 1 列 */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -679,8 +680,8 @@ td.muted { color: var(--muted); }
 .switch {
   position: relative;
   display: inline-block;
-  width: 46px;
-  height: 26px;
+  width: 52px;
+  height: 30px;
   flex: 0 0 auto;
 }
 .switch input {
@@ -700,8 +701,8 @@ td.muted { color: var(--muted); }
 .switch-slider::before {
   content: "";
   position: absolute;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   left: 2px;
   top: 2px;
   border-radius: 50%;
@@ -713,7 +714,7 @@ td.muted { color: var(--muted); }
   border-color: #38bdf8;
 }
 .switch input:checked + .switch-slider::before {
-  transform: translateX(20px);
+  transform: translateX(22px);
 }
 .switch input:disabled + .switch-slider {
   opacity: .45;

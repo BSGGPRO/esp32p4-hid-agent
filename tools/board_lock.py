@@ -23,6 +23,51 @@ import time
 LOCK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".board.lock")
 LOCK_PATH = os.path.abspath(LOCK_PATH)
 STALE_SECONDS = 900
+# 持有者进程已死时，等这么久（秒）就判定为僵尸锁并立刻抢占，不用等 900 s
+DEAD_PID_GRACE = 3.0
+
+
+def _pid_alive(pid):
+    """判断 pid 是否还活着（Windows 用 OpenProcess，避免 os.kill 的杀进程语义）。"""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        k32 = ctypes.windll.kernel32
+        handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong(0)
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True  # 查不到就当活着，宁可保守
+            return code.value == STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _is_stale(info, age):
+    """锁是否可被抢占：超过 STALE_SECONDS，或持有者进程已死（宽限 3 s）。"""
+    if age >= STALE_SECONDS:
+        return True, "%.0fs old" % age
+    host = (os.environ.get("COMPUTERNAME") or "").lower()
+    lock_host = (info.get("host") or "").lower()
+    if host and lock_host and host != lock_host:
+        return False, ""
+    if age > DEAD_PID_GRACE and not _pid_alive(info.get("pid")):
+        return True, "holder pid %s is dead" % info.get("pid")
+    return False, ""
 
 
 def _read():
@@ -38,7 +83,9 @@ def status():
     if not info:
         return {"locked": False}
     age = time.time() - info.get("ts", 0)
-    return {"locked": age < STALE_SECONDS, "age_s": round(age, 1), **info}
+    stale, why = _is_stale(info, age)
+    return {"locked": not stale, "stale": stale, "stale_reason": why,
+            "age_s": round(age, 1), "holder_alive": _pid_alive(info.get("pid")), **info}
 
 
 def acquire(who, timeout=600.0, poll=1.0):
@@ -47,18 +94,20 @@ def acquire(who, timeout=600.0, poll=1.0):
         info = _read()
         if info:
             age = time.time() - info.get("ts", 0)
-            if age < STALE_SECONDS:
+            stale, why = _is_stale(info, age)
+            if stale:
+                print("[board_lock] breaking stale lock of %s (%s)" % (info.get("who"), why),
+                      file=sys.stderr)
+                try:
+                    os.remove(LOCK_PATH)
+                except OSError:
+                    pass
+            else:
                 if time.time() > deadline:
                     raise TimeoutError(
                         "board lock held by %s for %.0fs" % (info.get("who"), age))
                 time.sleep(poll)
                 continue
-            print("[board_lock] breaking stale lock of %s (%.0fs old)" % (info.get("who"), age),
-                  file=sys.stderr)
-            try:
-                os.remove(LOCK_PATH)
-            except OSError:
-                pass
         try:
             fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
