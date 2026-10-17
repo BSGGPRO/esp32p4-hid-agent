@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import math
 import os
 import subprocess
 import sys
@@ -34,6 +35,7 @@ from ctypes import wintypes  # noqa: E402
 import eyes  # noqa: E402
 import verify  # noqa: E402
 from agent_bridge import AgentBridge, BridgeError, ProtocolError  # noqa: E402
+from transport_base import TransportError  # noqa: E402
 from transport_uart import UartTransport  # noqa: E402
 
 u32 = ctypes.windll.user32
@@ -236,6 +238,70 @@ def _step_for(err: int) -> int:
     return mag if err > 0 else -mag
 
 
+# --------------------------------------------------------------------------- #
+# 抗打断：区分「板子挪的」和「用户手挪的」
+# --------------------------------------------------------------------------- #
+class PointerGuard:
+    """检测真鼠标介入。
+
+    HID 只能发相对位移，Windows 指针加速又按速度放大，所以"期望位移"只能用
+    实测增益表预测。预测本身有 10%~20% 误差，阈值必须留够余量：
+
+    * 偏差 <= max(tol_px, rel_tol*|期望位移|)  -> 认为是我们的移动，正常；
+    * 偏差更大，或方向与我们发**完全相反**且幅度 > tol_px -> 判定用户介入。
+
+    用户介入不是错误：调用方应把当前真实光标当新锚点，而不是硬拽回原轨迹。
+    连续 `max_consecutive` 次介入则说明用户在抢鼠标，应当停下。
+    """
+
+    def __init__(self, tol_px: int = 15, rel_tol: float = 0.30,
+                 max_consecutive: int = 4):
+        self.tol_px = int(tol_px)
+        self.rel_tol = float(rel_tol)
+        self.max_consecutive = int(max_consecutive)
+        self.consecutive = 0
+        self.total = 0
+        self.events: list[dict] = []
+
+    def expected(self, sx: int, sy: int) -> tuple[float, float]:
+        return (sx * _gain(abs(sx)) if sx else 0.0,
+                sy * _gain(abs(sy)) if sy else 0.0)
+
+    def observe(self, before, after, sx: int, sy: int) -> dict:
+        """一次移动的观测：返回 {interrupt, deviation, expected, actual}。"""
+        delta = (after[0] - before[0], after[1] - before[1])
+        exp = self.expected(sx, sy)
+        dev = math.hypot(delta[0] - exp[0], delta[1] - exp[1])
+        exp_mag = math.hypot(*exp)
+        allowed = max(self.tol_px, self.rel_tol * exp_mag)
+        # 方向反转且幅度够大 -> 一定是外力
+        reversed_dir = (delta[0] * exp[0] + delta[1] * exp[1]) < 0
+        big = math.hypot(*delta) > self.tol_px
+        interrupt = dev > allowed or (reversed_dir and big and exp_mag > 0)
+        ev = {"interrupt": bool(interrupt), "deviation": round(dev, 1),
+              "expected": [round(exp[0], 1), round(exp[1], 1)],
+              "actual": list(delta), "sent": [int(sx), int(sy)],
+              "allowed": round(allowed, 1),
+              "at": list(after)}
+        if interrupt:
+            self.consecutive += 1
+            self.total += 1
+            self.events.append(ev)
+            if len(self.events) > 40:
+                self.events = self.events[-40:]
+        else:
+            self.consecutive = 0
+        return ev
+
+    def should_pause(self) -> bool:
+        return self.consecutive >= self.max_consecutive
+
+    def summary(self) -> dict:
+        return {"interruptions": self.total, "consecutive": self.consecutive,
+                "events": list(self.events[-10:])}
+
+
+
 # 常用简写 -> 协议 §4 规范键名（大脑层替上层兜住这个细节）
 _KEY_ALIASES = {
     "ctrl": "leftctrl", "control": "leftctrl",
@@ -262,10 +328,30 @@ def norm_combo(keys) -> list[str]:
 
 class Brain:
     def __init__(self, port: str = "COM7", baud: int = 115200, timeout: float = 1.5,
-                 verbose: bool = False):
+                 verbose: bool = False, transport: str = "uart",
+                 host: str = "127.0.0.1", tcp_port: int = 8766,
+                 fallback_uart: bool = True):
         self.port = port
+        self.transport_name = transport
+        self.transport_note = None
         self.screen_w, self.screen_h = screen_size()
-        tr = UartTransport(port=port, baud=baud)
+        tr = None
+        if transport == "tcp":
+            # 串口唯一：hub 独占 COM7，这里只连本地 TCP 透传，不抢串口
+            from transport_tcp import TcpTransport
+            tr = TcpTransport(host=host, port=tcp_port, timeout=timeout)
+            try:
+                tr.open()
+            except TransportError as exc:
+                self.transport_note = "TCP %s:%d 不可用: %s" % (host, tcp_port, exc)
+                if not fallback_uart:
+                    raise
+                print("[transport] %s -> 回退 UART %s" % (self.transport_note, port),
+                      file=sys.stderr)
+                self.transport_name = "uart"
+                tr = UartTransport(port=port, baud=baud)
+        else:
+            tr = UartTransport(port=port, baud=baud)
         self.bridge = AgentBridge(tr, timeout=timeout, release_on_close=True)
         self.bridge.open()
         self.verbose = verbose
@@ -349,24 +435,54 @@ class Brain:
                 "changed": text != before}
 
     # -- 绝对定位（闭环收敛）------------------------------------------------
-    def point(self, tx: int, ty: int, tol: int = 2, max_iter: int = 60) -> dict:
+    def _move_step(self, sx: int, sy: int, guard: PointerGuard | None,
+                   settle_ms: int = 10) -> dict | None:
+        """发一次相对位移；有 guard 时读回光标做介入判定。"""
+        if guard is None:
+            self.bridge.mouse_move(sx, sy)
+            self._actions += 1
+            return None
+        before = cursor_pos()
+        self.bridge.mouse_move(sx, sy)
+        self._actions += 1
+        time.sleep(settle_ms / 1000.0)
+        return guard.observe(before, cursor_pos(), sx, sy)
+
+    def locate(self, tx: int, ty: int, tol: int = 1, max_iter: int = 40,
+               guard: PointerGuard | None = None, settle_ms: int = 10) -> dict:
+        """把光标闭环挪到 (tx, ty)，直到 |误差| <= tol（默认 1 px）。
+
+        与 ``point`` 的区别：容差更严、带抗打断检测。每一步都重新读
+        ``GetCursorPos()`` 算残差，所以用户中途推了鼠标，下一步自然会把
+        当前真实位置当新锚点，不会硬拽回旧轨迹。
+        """
         tx = max(0, min(self.screen_w - 1, int(tx)))
         ty = max(0, min(self.screen_h - 1, int(ty)))
         start = cursor_pos()
         stuck = 0
         last = start
+        interruptions = 0
         for i in range(1, max_iter + 1):
             x, y = cursor_pos()
             ex, ey = tx - x, ty - y
             if abs(ex) <= tol and abs(ey) <= tol:
                 return {"ok": True, "iterations": i - 1, "target": [tx, ty],
-                        "final": [x, y], "error": [ex, ey], "start": list(start)}
+                        "final": [x, y], "error": [ex, ey], "start": list(start),
+                        "interruptions": interruptions}
             sx, sy = _step_for(ex), _step_for(ey)
             if sx == 0 and sy == 0:
                 sx, sy = (1 if ex > 0 else -1 if ex < 0 else 0,
                           1 if ey > 0 else -1 if ey < 0 else 0)
-            self.bridge.mouse_move(sx, sy)
-            self._actions += 1
+            ev = self._move_step(sx, sy, guard, settle_ms)
+            if ev is not None and ev["interrupt"]:
+                interruptions += 1
+                if guard is not None and guard.should_pause():
+                    x, y = cursor_pos()
+                    return {"ok": False, "iterations": i, "target": [tx, ty],
+                            "final": [x, y], "error": [tx - x, ty - y],
+                            "start": list(start), "interruptions": interruptions,
+                            "reason": "user interference (pointer moved by user)",
+                            "guard": guard.summary()}
             now = cursor_pos()
             if now == last:
                 stuck += 1
@@ -378,7 +494,90 @@ class Brain:
         x, y = cursor_pos()
         return {"ok": False, "iterations": max_iter, "target": [tx, ty],
                 "final": [x, y], "error": [tx - x, ty - y], "start": list(start),
-                "reason": "did not converge"}
+                "interruptions": interruptions, "reason": "did not converge"}
+
+    def point(self, tx: int, ty: int, tol: int = 2, max_iter: int = 60,
+              guard: PointerGuard | None = None) -> dict:
+        """兼容旧行为：默认容差 2 px 的闭环定位。"""
+        return self.locate(tx, ty, tol=tol, max_iter=max_iter, guard=guard)
+
+    def drag_path(self, points, button: str = "left",
+                  guard: PointerGuard | None = None,
+                  tol: int = 1, settle_ms: int = 10,
+                  max_segment_gap: int = 0) -> dict:
+        """沿 ``points`` 用**一次按下-连续移动-抬起**画一条折线。
+
+        与 ``drag`` 的区别：``drag`` 是"定位→按下→定位→抬起"，中间没有轨迹；
+        ``drag_path`` 在按键保持期间逐点闭环移动，落笔即连续线条，适合画弧线。
+
+        抗打断：每个中间点用 ``locate`` 闭环；若检测到用户动了真鼠标
+        （``PointerGuard``），会抬笔、把当前真实位置当新锚点、从**下一个规划点**
+        继续画（留下一个小缺口，但绝不把用户的乱动画成长线），并记录事件。
+        连续多次介入（guard.should_pause()）则中止剩余笔画。
+
+        返回 {ok, points, interruptions, resumed, events, guard}
+        """
+        pts = [(int(round(x)), int(round(y))) for x, y in points]
+        if len(pts) < 2:
+            return {"ok": False, "reason": "drag_path 至少需要 2 个点"}
+        res = {"ok": True, "points": len(pts), "interruptions": 0, "resumed": 0,
+               "events": [], "aborted": False}
+        a = self.locate(pts[0][0], pts[0][1], tol=tol, guard=guard,
+                        settle_ms=settle_ms)
+        if not a["ok"]:
+            res.update({"ok": False, "reason": "start point not reached",
+                        "start": a})
+            return res
+        self.bridge.mouse_btn(button, "down")
+        self._actions += 1
+        pen_down = True
+        i = 1
+        try:
+            while i < len(pts):
+                r = self.locate(pts[i][0], pts[i][1], tol=tol, guard=guard,
+                                settle_ms=settle_ms)
+                res["interruptions"] += r.get("interruptions", 0)
+                if not r["ok"] and r.get("reason", "").startswith("user interference"):
+                    # 用户在抢鼠标：抬笔（别把他拖出来的线继续画），记录，然后从
+                    # 下一个规划点重新落笔。当前真实位置就是新锚点。
+                    if pen_down:
+                        self.bridge.mouse_btn(button, "up")
+                        self._actions += 1
+                        pen_down = False
+                    ev = {"index": i, "at": r.get("final"), "error": r.get("error"),
+                          "guard": r.get("guard")}
+                    res["events"].append(ev)
+                    res["resumed"] += 1
+                    if guard is not None and guard.should_pause():
+                        res["aborted"] = True
+                        res["reason"] = "user interference: paused"
+                        break
+                    i += 2                     # 跳过一个点，换个落笔位置
+                    if i < len(pts):
+                        rr = self.locate(pts[i][0], pts[i][1], tol=tol,
+                                         guard=guard, settle_ms=settle_ms)
+                        if rr["ok"]:
+                            self.bridge.mouse_btn(button, "down")
+                            self._actions += 1
+                            pen_down = True
+                        else:                  # 落笔点都到不了，剩余笔画放弃
+                            res["aborted"] = True
+                            res["reason"] = "resume point not reached"
+                            break
+                    continue
+                if not r["ok"]:
+                    res.update({"ok": False, "reason": "segment point not reached",
+                                "segment": i, "detail": r})
+                    break
+                i += 1
+        finally:
+            if pen_down:
+                self.bridge.mouse_btn(button, "up")
+                self._actions += 1
+        if not res.get("ok") and "reason" not in res:
+            res["reason"] = "unknown"
+        return res
+
 
     # -- 动作 ---------------------------------------------------------------
     def move(self, dx: int, dy: int) -> dict:
@@ -482,16 +681,19 @@ class Brain:
 
     def info(self) -> dict:
         st = self.bridge.status()
-        return {"ok": True, "port": self.port, "screen": [self.screen_w, self.screen_h],
+        return {"ok": True, "port": self.port, "transport": self.transport_name,
+                "transport_note": self.transport_note,
+                "screen": [self.screen_w, self.screen_h],
                 "cursor": list(cursor_pos()), "status": st, "actions": self._actions}
 
 
 # --------------------------------------------------------------------------- #
 # 脚本执行（一次连接跑一组动作）
 # --------------------------------------------------------------------------- #
-_OPS = {"look", "point", "move", "click", "drag", "scroll", "type", "key",
-        "tap", "hold", "release", "sleep", "wins", "focus", "launch",
-        "clip_get", "clip_set", "diff", "wait_change", "read_text", "info", "stop"}
+_OPS = {"look", "point", "locate", "move", "click", "drag", "drag_path",
+        "scroll", "type", "key", "tap", "hold", "release", "sleep", "wins",
+        "focus", "launch", "clip_get", "clip_set", "diff", "wait_change",
+        "read_text", "info", "stop"}
 
 
 def exec_step(b: Brain, step: dict) -> dict:
@@ -503,6 +705,11 @@ def exec_step(b: Brain, step: dict) -> dict:
         return b.look(step.get("path"), step.get("region"))
     if op == "point":
         return b.point(step["x"], step["y"], tol=step.get("tol", 2))
+    if op == "locate":
+        return b.locate(step["x"], step["y"], tol=step.get("tol", 1))
+    if op == "drag_path":
+        return b.drag_path(step["points"], step.get("button", "left"),
+                           guard=PointerGuard() if step.get("guard", True) else None)
     if op == "move":
         return b.move(step["dx"], step["dy"])
     if op == "click":
@@ -600,6 +807,14 @@ def build_parser() -> argparse.ArgumentParser:
         prog="brain.py",
         description="大脑层：用 ESP32-P4 板子的 HID 键鼠 + 截屏闭环操作本机")
     p.add_argument("--port", default=os.environ.get("HID_PORT", "COM7"))
+    p.add_argument("--transport", default=os.environ.get("HID_TRANSPORT", "uart"),
+                   choices=["uart", "tcp"],
+                   help="uart=直连 COM7；tcp=连本地 hub 的 TCP 透传（不抢串口）")
+    p.add_argument("--host", default=os.environ.get("HID_HUB_HOST", "127.0.0.1"))
+    p.add_argument("--tcp-port", type=int,
+                   default=int(os.environ.get("HID_HUB_PORT", "8766")))
+    p.add_argument("--no-fallback", action="store_true",
+                   help="tcp 连不上时不回退 uart，直接报错")
     p.add_argument("--json", action="store_true", help="输出 JSON")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -608,6 +823,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("x", type=int)
     sp.add_argument("y", type=int)
     sp.add_argument("--tol", type=int, default=2)
+    sp = sub.add_parser("locate", help="绝对定位（1px 闭环 + 抗打断检测）")
+    sp.add_argument("x", type=int)
+    sp.add_argument("y", type=int)
+    sp.add_argument("--tol", type=int, default=1)
+    sp = sub.add_parser("drag-path", help="按折线连续拖拽（一次按下-移动-抬起）")
+    sp.add_argument("points", help="x1,y1;x2,y2;... 或 JSON 数组文件路径")
     sp = sub.add_parser("move", help="相对移动")
     sp.add_argument("dx", type=int)
     sp.add_argument("dy", type=int)
@@ -656,6 +877,20 @@ def _load_steps(path: str) -> list[dict]:
     return data
 
 
+def _parse_points(spec: str) -> list[tuple[int, int]]:
+    """解析 ``x1,y1;x2,y2;...`` 或 JSON 文件 ``[[x,y],...]``。"""
+    spec = spec.strip()
+    if spec.startswith("[") or os.path.isfile(spec):
+        with open(spec, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [(int(p[0]), int(p[1])) for p in data]
+    pts = []
+    for chunk in spec.replace(";", " ").split():
+        x, y = chunk.split(",")
+        pts.append((int(float(x)), int(float(y))))
+    return pts
+
+
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -678,10 +913,12 @@ def main(argv=None) -> int:
         return 0 if res.get("ok") else 1
 
     try:
-        brain = Brain(port=args.port)
+        brain = Brain(port=args.port, transport=args.transport, host=args.host,
+                      tcp_port=args.tcp_port, fallback_uart=not args.no_fallback)
     except Exception as exc:  # noqa: BLE001
         print("[PORT-ERROR] %s" % exc, file=sys.stderr)
         print("  hint: python pc/agent_bridge.py --list-ports", file=sys.stderr)
+        print("        hub 在跑吗? python pc/hub.py（默认 127.0.0.1:8766）", file=sys.stderr)
         return 3
 
     try:
@@ -689,6 +926,10 @@ def main(argv=None) -> int:
             res = brain.look(region=args.region)
         elif args.cmd == "point":
             res = brain.point(args.x, args.y, tol=args.tol)
+        elif args.cmd == "locate":
+            res = brain.locate(args.x, args.y, tol=args.tol)
+        elif args.cmd == "drag-path":
+            res = brain.drag_path(_parse_points(args.points), guard=PointerGuard())
         elif args.cmd == "move":
             res = brain.move(args.dx, args.dy)
         elif args.cmd == "click":
