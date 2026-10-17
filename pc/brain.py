@@ -221,6 +221,23 @@ def _gain(mag: float) -> float:
     return _GAIN_TABLE[-1][1]
 
 
+def set_gain_table(rows) -> list:
+    """用外部标定结果覆盖内置增益表（换设备后用，见 tools/home-calibrate.py）。
+
+    ``rows``: ``[(counts, gain), ...]``；counts > 0 且 gain > 0 才生效。
+    返回当前生效的表（非法输入不修改原表）。
+    """
+    global _GAIN_TABLE
+    try:
+        cleaned = sorted((float(m), float(g)) for m, g in rows
+                         if float(m) > 0 and float(g) > 0)
+    except (TypeError, ValueError):
+        return _GAIN_TABLE
+    if cleaned:
+        _GAIN_TABLE = cleaned
+    return _GAIN_TABLE
+
+
 def _step_for(err: int) -> int:
     """把误差换算成本次该发给板子的相对位移。
 
@@ -363,6 +380,17 @@ class Brain:
             self.bridge.ping()
         self.safety_timeout_ms = None
         self._actions = 0
+
+        # 换设备自动适配：本机若跑过 tools/home-calibrate.py（CNC 四角归零），
+        # 就用那台设备实测的增益表；没有档案则保持内置表（闭环照样收敛）。
+        self.gain_source = "builtin"
+        try:
+            import pointer_profile
+            table = pointer_profile.apply_to_brain(sys.modules[__name__])
+            if table:
+                self.gain_source = "profile:%s" % pointer_profile.screen_signature()
+        except Exception:  # noqa: BLE001
+            pass
 
     # -- 生命周期 -----------------------------------------------------------
     def close(self) -> None:
