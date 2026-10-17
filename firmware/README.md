@@ -1,9 +1,10 @@
 # esp32p4-hid-agent — firmware
 
 ESP-IDF v5.5.x project for **JC-ESP32P4-M3** (target `esp32p4`) implementing the
-firmware side of [`../docs/protocol.md`](../docs/protocol.md) **v1.0.1**:
+firmware side of [`../docs/protocol.md`](../docs/protocol.md) **v1.2**:
 a UART0 JSON-lines command interface that drives a composite TinyUSB HID
-keyboard + mouse.
+keyboard + mouse, plus live `stats` telemetry (`stats`, §3.6), TF-card
+verification (`sd_test`, §3.7) and an on-die temperature sensor (§10.4).
 
 | Item | Value |
 |---|---|
@@ -20,16 +21,22 @@ keyboard + mouse.
 ```
 firmware/
 ├── CMakeLists.txt              project + ESP-IDF include
-├── sdkconfig.defaults          silent logs, 1 kHz tick, TinyUSB HID/VID/PID
+├── partitions.csv              16 MB: nvs 24K, phy_init 4K, factory app 3 MB
+├── sdkconfig.defaults          silent logs, 1 kHz tick, TinyUSB HID/VID/PID,
+│                               16 MB flash, PSRAM, PM/DFS, custom partitions
 └── main/
     ├── CMakeLists.txt
     ├── idf_component.yml       espressif/esp_tinyusb ^2.0.0
     ├── Kconfig.projbuild       HID_AGENT_RX_DEBUG
-    ├── app_main.c              UART0 raw line reader (no VFS console)
-    ├── uart_link.c/.h          UART driver init, framed TX, uptime ms
+    ├── app_main.c              UART0 raw line reader (no VFS console), PM/DFS
+    ├── uart_link.c/.h          UART driver init, framed TX, uptime ms, tx counter
     ├── keymap.c/.h             protocol.md §4 key table + US-layout text map
     ├── hid_device.c/.h         descriptors, TinyUSB install, HID state machine
-    └── cmd_protocol.c/.h       §3 commands, §3.4 errors, §3.5 events, §6 safety
+    ├── cmd_protocol.c/.h       §3 commands (+ stats/sd_test), errors, events, safety
+    ├── stats.c/.h              §3.6 stats payload (cpu/mem/temp/tasks/sd/net/uart)
+    ├── sdcard.c/.h             §3.7 TF card: LDO power, probe ladder, FAT mount,
+    │                           sd_test read/write/verify
+    └── thermal.c/.h            §10.4 on-die temperature sensor + thresholds
 ```
 
 ## Static self-check: every protocol.md §3 command → implementing function
@@ -40,6 +47,10 @@ firmware/
 | `status` | `id` | `cmd_status()` | no (inline) | `cmd_status()` |
 | `keepalive` | `id?` | `cmd_keepalive()` | no (inline) | `cmd_keepalive()` |
 | `set` | `key`,`value` | `cmd_set()` | no (inline) | `cmd_set()` |
+| `stats` | `id` | `cmd_stats()` → `stats_build()` | no (inline) | `cmd_stats()` |
+| `sd_test` | `id`,`bytes?` | `cmd_sd_test()` → `sd_test` task → `sdcard_run_test()` | own task | `reply_sd_test()` |
+| `sd_remount` | `id` | 卸载并重新探测/挂载 TF 卡，返回完整 `sd` 状态 |
+| `sd_format` | `id`, `confirm:"ERASE"`, `fs`?`"fat32"` | **破坏性** FAT32 格式化 + 重挂载 + 立即 1MB `sd_test` |
 | `key` | `keys[]` | `cmd_key_action()` → `JOB_KEY_PRESS` | yes | `job_reply_ok()` |
 | `key_down` | `keys[]` | `cmd_key_action()` → `JOB_KEY_PRESS` | yes | `job_reply_ok()` |
 | `key_up` | `keys[]` | `cmd_key_action()` → `JOB_KEY_RELEASE` | yes | `job_reply_ok()` |
@@ -168,49 +179,150 @@ riscv32-esp-elf gcc 14.2.0. Managed components resolved:
 `Project build complete`.
 
 ```
-esp32p4_hid_agent.bin binary size 0x508b0 bytes (329,904 B).
-Smallest app partition is 0x100000 bytes. 0xaf750 bytes (69%) free.
+esp32p4_hid_agent.bin binary size 0x6d170 bytes (446,832 B).
+Smallest app partition is 0x300000 bytes. 0x292e90 bytes (86%) free.
 ```
 
-`idf.py size` (total image 329,542 B):
+`idf.py size` (real output for the v0.2 build, full log in
+`docs/evidence/fw-build-size.txt`):
 
 | Memory type | Used [B] | Used [%] | Remain [B] | Total [B] |
 |---|---|---|---|---|
-| Flash | 251,354 | — | — | — |
-|   .text | 193,162 | | | |
-|   .rodata | 57,700 | | | |
+| Flash | 353,806 | — | — | — |
+|   .text | 277,254 | | | |
+|   .rodata | 76,028 | | | |
+|   .init_array | 268 | | | |
 |   .appdesc | 256 | | | |
-|   .init_array | 236 | | | |
-| DIRAM | 85,894 | 13.11 | 569,466 | 655,360 |
-|   .text (DIRAM) | 69,162 | 10.55 | | |
-|   .data | 8,724 | 1.33 | | |
-|   .bss | 8,008 | 1.22 | | |
-| HP core RAM | 538 | 6.57 | 7,654 | 8,192 |
+| DIRAM | 102,646 | 17.81 | 473,818 | 576,464 |
+|   .text (DIRAM) | 80,710 | 14.00 | | |
+|   .data | 12,072 | 2.09 | | |
+|   .bss | 9,864 | 1.71 | | |
+| HP core RAM | 122 | 1.49 | 8,070 | 8,192 |
+|   .text | 62 | 0.76 | | |
+|   .data | 60 | 0.73 | | |
 | LP RAM | 24 | 0.07 | 32,744 | 32,768 |
+|   .rtc_reserved | 24 | 0.07 | | |
 
-`idf.py size-components` → this application's own code (`libmain.a`):
-**14,365 B total** (12,080 B flash `.text`, 1,437 B `.rodata`, 848 B DIRAM).
+Total image size: **446,442 B** (`.bin` padded to 446,832 B).
 
 Artifacts (`build/`):
 
 | File | Offset | Size |
 |---|---|---|
-| `build/bootloader/bootloader.bin` | `0x2000` | — |
-| `build/partition_table/partition-table.bin` | `0x8000` | — |
-| `build/esp32p4_hid_agent.bin` | `0x10000` | 329,904 B |
+| `build/bootloader/bootloader.bin` | `0x2000` | 16,064 B |
+| `build/partition_table/partition-table.bin` | `0x8000` | 3,072 B |
+| `build/esp32p4_hid_agent.bin` | `0x10000` | 446,832 B |
 
 `build/flash_args`: `--flash_mode dio --flash_freq 80m --flash_size 16MB`.
-(`--flash_mode dio` while `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` is expected: upstream
-`components/esptool_py/Kconfig.projbuild` maps both QIO and QOUT to the header
-string `"dio"`; the real mode comes from the flash chip/efuse.)
 
 Resolved sdkconfig spot-check: `CONFIG_TINYUSB_HID_COUNT=1`,
 `CONFIG_TINYUSB_DESC_USE_ESPRESSIF_VID=y`, `CONFIG_TINYUSB_DESC_USE_DEFAULT_PID=y`,
 `CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y`, `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y`,
 `CONFIG_ESPTOOLPY_FLASHFREQ_80M=y`, `CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200`,
 `CONFIG_FREERTOS_HZ=1000`, `CONFIG_LOG_DEFAULT_LEVEL_NONE=y`,
-`CONFIG_LOG_MAXIMUM_LEVEL_INFO=y`, `CONFIG_PARTITION_TABLE_SINGLE_APP=y`.
+`CONFIG_LOG_MAXIMUM_LEVEL_INFO=y`, `CONFIG_PARTITION_TABLE_CUSTOM=y` +
+`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"`,
+`CONFIG_SPIRAM=y` / `CONFIG_SPIRAM_MODE_HEX=y` / `CONFIG_SPIRAM_SPEED_200M=y`,
+`CONFIG_FREERTOS_USE_TRACE_FACILITY=y`, `CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y`,
+`CONFIG_PM_ENABLE=y`, `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`.
 
 `grep -c TINYUSB_RHPORT managed_components/espressif__esp_tinyusb/Kconfig` → **0**
 (confirms the v2 claim above: the HS port is selected by
 `TINYUSB_DEFAULT_CONFIG()`, there is no Kconfig symbol to set).
+
+## v0.2 additions: `stats`, TF card, temperature / passive cooling
+
+### `stats` (§3.6)
+
+`stats_build()` lives in `stats.c`; every field is read live at call time.
+Two details worth knowing:
+
+* **CPU %** is window based: `stats_init()` seeds the idle-task run-time counters
+  at boot, so the first call already reports a meaningful window; later calls
+  report the window since the previous call (`window_ms` says which).
+* `heap_*` are all **internal RAM** (`MALLOC_CAP_INTERNAL`). The global
+  `esp_get_minimum_free_heap_size()` would include the 32 MB PSRAM heap and
+  report ~32 MB as a "low water mark", which is useless — hence the
+  `heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)` fix.
+* `cpu.mhz` is the **instantaneous** clock (`esp_clk_tree_src_get_freq_hz`).
+  With DFS enabled it reads 360 while a command is being served (the PM
+  framework ramps up for any running task) and drops to 40 while idle.
+
+### TF card (§3.7) — `sdcard.c`
+
+Board wiring (verified against the vendor BSP in `1-Demo/`, which matches the
+P4 slot-0 default IOMUX, so no GPIO-matrix remap is needed):
+
+| Signal | GPIO | | Signal | GPIO |
+|---|---|---|---|---|
+| CLK | 43 | | D1 | 40 |
+| CMD | 44 | | D2 | 41 |
+| D0 | 39 | | D3 | 42 |
+
+Bring-up sequence (`bring_up()`):
+
+1. `sd_pwr_ctrl_new_on_chip_ldo({.ldo_chan_id = 4})` — **the card's IO rail is
+   powered by the P4 on-chip LDO channel 4**. Without this the card never answers
+   CMD0 and the probe reports `card_init:ESP_ERR_TIMEOUT` (that was the original
+   bug: identical symptom, wrong root cause).
+2. 100 ms power-on delay.
+3. Probe ladder, first success wins and is recorded in `stats.sd.tries`:
+   `1bit/400kHz` → `4bit/20MHz` → `1bit/20MHz` (each `sdmmc_card_init` with a
+   fresh host; the host is deinit'ed before the mount because
+   `esp_vfs_fat_sdmmc_mount()` brings it up itself).
+4. Raw boot-sector inspection decides `sd.fs`; exFAT is **reported and never
+   formatted** (`err:"exfat_not_supported"`) because IDF FatFs has no exFAT
+   driver. A FAT card is mounted at `/sdcard` with
+   `format_if_mount_failed=false`, preferring the 4-bit/20 MHz bus and falling
+   back to the probing bus.
+5. `sd.cd` is always `null`: this socket has no independent card-detect switch
+   (microSD pin 2 is CD/DATA3, shared with the 4-bit data line).
+
+`sd_test` runs on a private 6 KB task (`s_sd_test_busy` guard, one at a time),
+writes the pattern `(i*31+7) & 0xFF`, reads it back, verifies, and caches the
+speeds into `stats.sd.speed_*`. `bytes` is clamped to 1 KB … 16 MB.
+
+**Real card on the bench: 64 GB SanDisk-class exFAT (`SN64G`, `SDXC`,
+`capacity_mb` 60 906) → detected and reported, not mounted** — the electrical
+path is fixed, an exFAT-capable FS is the only remaining gap (see
+`docs/evidence/` and the hand-off note).
+
+### Temperature / passive cooling (§10.4) — `thermal.c`
+
+* Internal P4 temperature sensor, 20–100 °C window (±2 °C), read once per
+  `stats` call → `temp_c` (1 decimal) and `temp_warn`.
+* **No fixed 240 MHz on this silicon**: ESP32-P4 rev v1.3 (`ESP32P4_SELECTS_REV_LESS_V3`)
+  only offers 40 or 360 MHz fixed (`components/esp_system/port/soc/esp32p4/Kconfig.cpu`).
+* Heat reduction therefore uses **esp_pm DFS**: `esp_pm_configure(max=360,
+  min=40, light_sleep=false)`; idle → 40 MHz, command → 360 MHz.
+  UART0 is clocked from `UART_SCLK_DEFAULT = PLL_F80M` (fixed 80 MHz PLL,
+  independent of the CPU clock), so 115200 baud cannot be disturbed; the SDMMC
+  driver takes an `ESP_PM_APB_FREQ_MAX` lock around its transactions.
+  Light sleep stays off because USB HID must remain enumerated.
+* Overheat policy: `temp_c ≥ 70` sets `temp_warn`; `≥ 80` makes the RX task
+  insert a 10 ms delay between frames (a command storm can no longer hold the
+  CPU at 360 MHz), released below 77 °C. Thresholds are runtime-configurable via
+  `{"cmd":"set","key":"temp_warn_c","value":70}` / `"temp_throttle_c"`.
+* Evidence: `docs/evidence/fw-serial-verify.txt` (temp fields + `sd.tries`),
+  `docs/evidence/fw-soak-*.txt` (10 min mixed workload: temp, heap, stack HWM,
+  ping/mouse latency).
+## v0.2 additions: PM/DFS runtime governor (protocol.md §10.4)
+
+- **Boot default: fixed 360 MHz.** `pm_ctl_init()` configures
+  `esp_pm_configure(max=360, min=360, light_sleep=false)`.
+- **Runtime switch:** `{"cmd":"set","key":"dfs","value":1}` enables the
+  `adaptive` governor, `value:0` returns to `fixed360`. Not persisted (a reset
+  returns to the safe default on purpose).
+- **adaptive governor:** boost via `esp_pm_lock_acquire(ESP_PM_CPU_FREQ_MAX)` on
+  any UART frame / HID report / SD transfer, release after 500 ms of quiet
+  (100 ms above 70 °C), and hold the lock for the whole SD operation so the
+  clock never changes mid-transfer.
+- **Why:** plain DFS (min=40) caused `rst:0x7 (HP_SYS_HP_WDT_RESET)` on long
+  SDMMC writes and periodic HID re-enumeration on this early P4 silicon
+  (rev v1.3). Adaptive passes 15/15 `sd_test`, identical ping/mouse latency;
+  fixed360 passes 10/10. Evidence: `docs/evidence/fw-governor.txt`,
+  `fw-bisect-nopm.txt`, `fw-pm-toggle.txt`.
+- **stats.pm:** `{governor, dfs, min_mhz, max_mhz, cur_mhz, idle_ms, boosts,
+  downs, last_reason}` — additive field, safe for older clients.
+
+Latest build: `esp32p4_hid_agent.bin` = 452,640 B (0x6e820), app partition 86% free; `idf.py build` 0 errors / 0 warnings.

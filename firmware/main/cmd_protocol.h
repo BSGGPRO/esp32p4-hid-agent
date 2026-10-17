@@ -16,6 +16,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /** Create the command queue and start the worker/monitor tasks. */
 void proto_init(void);
@@ -44,3 +45,9 @@ void proto_event_hid_unmounted(void);
  *        safety release happened).  Checked by long-running HID loops.
  */
 bool proto_seq_should_abort(void);
+
+/** protocol.md v1.2 §3.6 rx_ok counter: frames parsed and dispatched. */
+uint32_t proto_rx_ok(void);
+
+/** protocol.md v1.2 §3.6 rx_bad counter: lines dropped as a whole. */
+uint32_t proto_rx_bad(void);

@@ -5,9 +5,20 @@ idf_component_register(
         "keymap.c"
         "hid_device.c"
         "cmd_protocol.c"
+        "stats.c"
+        "sdcard.c"
+        "thermal.c"
+        "pm_ctl.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_driver_uart
         esp_timer
         json
+    PRIV_REQUIRES
+        esp_driver_sdmmc
+        esp_driver_tsens
+        esp_hw_support
+        esp_pm
+        fatfs
+        sdmmc
 )

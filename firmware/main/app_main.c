@@ -18,6 +18,10 @@
 
 #include "cmd_protocol.h"
 #include "hid_device.h"
+#include "pm_ctl.h"
+#include "sdcard.h"
+#include "stats.h"
+#include "thermal.h"
 #include "uart_link.h"
 
 static const char *TAG = "hid_agent";
@@ -26,6 +30,11 @@ static const char *TAG = "hid_agent";
 #define RX_TASK_STACK 5120
 #define RX_TASK_PRIO  5
 #define RX_CHUNK_SIZE 256
+
+/* Overheat workload throttle: when the die reaches THERMAL_THROTTLE_C the RX
+ * loop deliberately backs off between frames instead of letting a command
+ * storm keep the CPU at full speed (docs/protocol.md v1.2 §10.4). */
+#define THERMAL_THROTTLE_DELAY_MS 10
 
 static void rx_task(void *arg)
 {
@@ -88,7 +97,12 @@ static void rx_task(void *arg)
                         proto_note_line_dropped();
                     } else if (len > 0) {
                         line[len] = '\0';
+                        /* protocol.md 10.4: a frame arrived -> boost at once */
+                        pm_ctl_activity(PM_REASON_UART_RX);
                         proto_handle_line(line, len);
+                        if (thermal_throttled()) {
+                            vTaskDelay(pdMS_TO_TICKS(THERMAL_THROTTLE_DELAY_MS));
+                        }
                     }
                     len = 0;
                     overflow = false;
@@ -113,7 +127,25 @@ void app_main(void)
     esp_log_level_set("hid_device", ESP_LOG_INFO);
     esp_log_level_set("cmd_proto", ESP_LOG_INFO);
     esp_log_level_set("uart_link", ESP_LOG_INFO);
+    esp_log_level_set("sdcard", ESP_LOG_INFO);
+    esp_log_level_set("thermal", ESP_LOG_INFO);
 #endif
+
+    /*
+     * docs/protocol.md v1.2 §10.4 - passive cooling: dynamic frequency scaling
+     * drops the CPU to 40 MHz while idle and back to the default 360 MHz as soon
+     * as work arrives.  This early-silicon P4 (rev v1.3) has NO fixed 240 MHz
+     * option (Kconfig offers only 40/360 for rev<3.0), so DFS is the only way
+     * to cut idle heat without touching the 115200 baud rate: UART0 uses
+     * PLL_F80M (UART_SCLK_DEFAULT) and is unaffected by CPU DFS.  Light sleep is
+     * left off because USB HID must stay enumerated.
+     */
+    /* Boot default: FIXED 360 MHz (DFS off) - the configuration that ran
+     * 10/10 clean in the PM bisect.  `set dfs=1` switches to DFS at runtime. */
+    esp_err_t pm_err = pm_ctl_init();
+    if (pm_err != ESP_OK && pm_ctl_available()) {
+        ESP_LOGE(TAG, "pm_ctl_init failed: %d", (int)pm_err);
+    }
 
     esp_err_t err = uart_link_init();
     if (err != ESP_OK) {
@@ -126,6 +158,23 @@ void app_main(void)
     }
 
     proto_init();
+
+    /* docs/protocol.md v1.2 §3.7: best-effort TF mount, never fatal.  A dead or
+     * exFAT card must not stop the HID agent from booting. */
+    err = sdcard_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "sdcard_init failed: %d", (int)err);
+    }
+
+    /* First CPU idle sample: the first `stats` call then has a real window. */
+    stats_init();
+
+    /* Internal temperature sensor for stats.temp_c / overheat policy. */
+    err = thermal_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "thermal_init failed: %d", (int)err);
+    }
+
     proto_event_boot();
 
     if (xTaskCreate(rx_task, RX_TASK_NAME, RX_TASK_STACK, NULL, RX_TASK_PRIO, NULL) != pdPASS) {

@@ -1,0 +1,12 @@
+# Partition table for JC-ESP32P4-M3-DEV (16 MB flash, docs/protocol.md v1.2 §10.2)
+#
+# Name,     Type, SubType, Offset,   Size,     Flags
+#
+# The app partition is deliberately 3 MB: the default single-app table gives
+# only 1 MB, and v0.2 (HID + FatFs + SDMMC + stats) plus future features must
+# never fail to link because of the partition size.  `factory` stays at 0x10000
+# (the default offset) so an older firmware .bin can be re-flashed alone for a
+# rollback: `esptool write_flash 0x10000 docs/evidence/fw-backup-*.bin`.
+nvs,        data, nvs,     0x9000,   0x6000,
+phy_init,   data, phy,     0xf000,   0x1000,
+factory,    app,  factory, 0x10000,  0x300000,

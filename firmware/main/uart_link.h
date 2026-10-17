@@ -42,5 +42,8 @@ QueueHandle_t uart_link_event_queue(void);
 /** Write one frame: `line` followed by '\n'.  Thread safe. */
 void uart_link_write_line(const char *line);
 
+/** protocol.md v1.2 §3.6 uart.tx_ok: frames written to UART0 since boot. */
+uint32_t uart_link_tx_frames(void);
+
 /** Milliseconds since boot (esp_timer based), same base as the "t" field. */
 uint32_t uart_link_now_ms(void);

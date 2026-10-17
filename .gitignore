@@ -15,3 +15,6 @@ pc/_wait_*.png
 pc/shot.png
 e2e_before.png
 e2e_after.png
+
+# 运行时锁文件（tools/board_lock.py 创建）
+.board.lock

@@ -1,5 +1,7 @@
 #include "hid_device.h"
 
+#include "pm_ctl.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -135,6 +137,7 @@ static bool hid_send_keyboard(uint8_t modifier, const uint8_t keys[HID_DEV_MAX_K
         if (!hid_wait_ready(HID_READY_TIMEOUT_MS)) {
             return false;
         }
+        pm_ctl_activity(PM_REASON_HID_TX);
         if (tud_hid_keyboard_report(REPORT_ID_KEYBOARD, modifier, snapshot)) {
             return true;
         }
@@ -148,6 +151,7 @@ static bool hid_send_mouse(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel, 
         if (!hid_wait_ready(HID_READY_TIMEOUT_MS)) {
             return false;
         }
+        pm_ctl_activity(PM_REASON_HID_TX);
         if (tud_hid_mouse_report(REPORT_ID_MOUSE, buttons, dx, dy, wheel, pan)) {
             return true;
         }

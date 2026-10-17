@@ -1,5 +1,5 @@
 # =============================================================================
-# esp32p4-hid-agent firmware defaults (see docs/protocol.md v1.0.1)
+# esp32p4-hid-agent firmware defaults (see docs/protocol.md v1.2)
 # =============================================================================
 
 # --- UART0 is the protocol link: it must never be polluted by logs -----------
@@ -29,6 +29,61 @@ CONFIG_TINYUSB_DESC_USE_DEFAULT_PID=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# --- Partition table: 16 MB flash, 3 MB single app (protocol.md §10.2) ------
+# The v1.2 image (HID + FatFs + SDMMC + stats) is ~0.5 MB, but the default
+# 1 MB single-app partition leaves no headroom for the next feature.  App stays
+# at 0x10000 so a rollback can still `esptool write_flash 0x10000 <old>.bin`.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- PSRAM: 32 MB in-package PSRAM, HEX mode @ 200 MHz ----------------------
+# Values match the vendor demo sdkconfig for this board family.  `stats`
+# reports psram_free/psram_total (§3.6); without PSRAM it would report 0/0.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# --- Ethernet: NOT used in v0.2 (no cable / no uplink) ----------------------
+# Do not build the EMAC + PHY drivers at all: nothing initializes MDIO, and the
+# image stays small.  See docs/protocol.md v1.2 §10.3.
+CONFIG_ETH_USE_ESP32_EMAC=n
+CONFIG_ETH_USE_SPI_ETHERNET=n
+
+# --- `stats` needs the task table and per-task run time (protocol.md §3.6) ---
+# configUSE_TRACE_FACILITY -> uxTaskGetSystemState() (name/prio/state/stack)
+# configGENERATE_RUN_TIME_STATS (ESP timer clock) -> idle task run time, from
+# which the per-core CPU percentages are derived between two stats calls.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# app_main() now also probes/mounts the TF card before the boot event.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=5120
+
+# --- Passive cooling: runtime PM/DFS switch, default FIXED 360 MHz ----------
+# protocol.md v1.2 §10.4.  Measured die temperature is only 22.6-28.6 °C, so
+# there is no heat problem in practice; temperature is still reported in
+# `stats.temp_c` with a warn flag and an 80 °C workload throttle.
+# Early silicon (ESP32-P4 rev v1.3) has NO fixed 240 MHz step (Kconfig offers
+# only 40 or 360 MHz), so the only power-saving knob is PM/DFS.  PM is compiled
+# in so the user can toggle it at runtime from the dashboard, but the BOOT
+# DEFAULT IS FIXED 360 MHz: pm_ctl_init() calls esp_pm_configure(max=360,
+# min=360, light_sleep=false).
+# Why the default is fixed360: plain DFS (min=40, no boost/hysteresis) made this
+# board reset with rst:0x7 (HP_SYS_HP_WDT_RESET) during long SDMMC transfers and
+# re-enumerate its HID device periodically; with DFS off, 10/10 sd_test runs were
+# clean and 0 HID events were seen in 60 s idle windows.
+# adaptive governor (`set dfs=1`): boost to 360 MHz immediately on UART/HID/SD
+# activity via ESP_PM_CPU_FREQ_MAX, release only after 500 ms of quiet (100 ms
+# when hot), and hold the lock for the whole duration of SD transfers.  Measured
+# 15/15 sd_test clean and ping/mouse latency identical to fixed360.
+# Runtime switch:  {"cmd":"set","key":"dfs","value":0|1}   (not persisted: after
+# a reset the board is back in the safe fixed360 mode on purpose).
+# UART0 runs from PLL_F80M, so 115200 baud is independent of the CPU clock.
+# Light sleep stays off: USB HID must stay enumerated.
+CONFIG_PM_ENABLE=y
+CONFIG_PM_DFS_INIT_AUTO=n
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=n
 
 # --- Console ----------------------------------------------------------------
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

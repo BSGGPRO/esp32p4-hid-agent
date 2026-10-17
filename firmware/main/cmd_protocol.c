@@ -4,6 +4,8 @@
  */
 #include "cmd_protocol.h"
 
+#include "esp_clk_tree.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,12 +18,16 @@
 
 #include "hid_device.h"
 #include "keymap.h"
+#include "pm_ctl.h"
+#include "sdcard.h"
+#include "stats.h"
+#include "thermal.h"
 #include "uart_link.h"
 
 static const char *TAG = "cmd_proto";
 
-#define FW_VERSION_STR    "1.0.0"
-#define PROTO_VERSION_STR "1.0"
+#define FW_VERSION_STR    "1.2.0"
+#define PROTO_VERSION_STR "1.2"
 
 /* protocol.md §3.1: caps is fixed */
 #define CAPS_KEYBOARD "hid_keyboard"
@@ -49,6 +55,13 @@ static const char *TAG = "cmd_proto";
 #define MOUSE_CLICK_COUNT_MAX     1000
 #define MOUSE_DELTA_LIMIT         32767
 #define TIME_VALUE_MAX_MS         60000
+
+/* protocol.md v1.2 §3.7: sd_test defaults and limits */
+#define SD_TEST_DEFAULT_BYTES (1024 * 1024)
+#define SD_TEST_MIN_BYTES     1024
+#define SD_TEST_MAX_BYTES     (16 * 1024 * 1024)
+#define SD_TEST_TASK_STACK    6144
+#define SD_TEST_TASK_PRIO     4
 
 /* protocol.md §3.4: more than 200 frames per second are rejected */
 #define RATE_LIMIT_PER_SEC 200
@@ -121,6 +134,9 @@ static volatile uint32_t s_safety_timeout_ms = DEFAULT_SAFETY_TIMEOUT_MS;
 static volatile bool s_seq_abort;
 
 static QueueHandle_t s_queue;
+
+/* protocol.md v1.2 §3.7: only one sd_test may run at a time */
+static volatile bool s_sd_test_busy;
 
 /* >200 frames/s window */
 static uint32_t s_window_start_ms;
@@ -471,6 +487,327 @@ static void cmd_keepalive(bool has_id, int id)
     reply_ok(has_id, id);
 }
 
+/*
+ * protocol.md v1.2 §3.6: the whole frozen stats object.  Building it needs a
+ * scheduler snapshot, so it runs inline in the RX task (a few hundred µs) and
+ * the reply is written as one JSON line - longer than the 512 B request limit,
+ * see docs/protocol.md §10.1.
+ */
+static void cmd_stats(bool has_id, int id)
+{
+    cJSON *stats = stats_build();
+    if (stats == NULL) {
+        reply_err(has_id, id, ERR_BAD_ARG);
+        return;
+    }
+
+    cJSON *obj = resp_new(true, has_id, id);
+    if (obj == NULL) {
+        cJSON_Delete(stats);
+        return;
+    }
+    cJSON_AddItemToObject(obj, "stats", stats);
+    resp_send(obj);
+}
+
+/* protocol.md v1.2 §3.7: {"ok":true,"sd_test":{...}} */
+static void reply_sd_test(bool has_id, int id, uint32_t bytes, uint32_t w_kbps,
+                          uint32_t r_kbps, bool verify, const char *err)
+{
+    cJSON *obj = resp_new(true, has_id, id);
+    if (obj == NULL) {
+        return;
+    }
+    cJSON *res = cJSON_AddObjectToObject(obj, "sd_test");
+    if (res != NULL) {
+        cJSON_AddNumberToObject(res, "bytes", (double)bytes);
+        cJSON_AddNumberToObject(res, "write_kbps", (double)w_kbps);
+        cJSON_AddNumberToObject(res, "read_kbps", (double)r_kbps);
+        cJSON_AddBoolToObject(res, "verify", verify);
+        cJSON_AddStringToObject(res, "path", SDCARD_TEST_PATH);
+        if (err != NULL && err[0] != '\0') {
+            cJSON_AddStringToObject(res, "err", err);
+        } else {
+            cJSON_AddItemToObject(res, "err", cJSON_CreateNull());
+        }
+    }
+    resp_send(obj);
+}
+
+typedef struct {
+    bool has_id;
+    int id;
+    uint32_t bytes;
+} sd_test_req_t;
+
+/* Runs off the RX task: writing + reading 1 MB can take seconds on a slow card. */
+static void sd_test_task(void *arg)
+{
+    sd_test_req_t *req = (sd_test_req_t *)arg;
+    uint32_t w_kbps = 0;
+    uint32_t r_kbps = 0;
+    bool verify = false;
+    char err[96] = "";
+
+    const esp_err_t rc = sdcard_run_test(req->bytes, &w_kbps, &r_kbps, &verify, err, sizeof(err));
+    reply_sd_test(req->has_id, req->id, req->bytes, w_kbps, r_kbps, verify,
+                  rc == ESP_OK ? NULL : err);
+
+    s_sd_test_busy = false;
+    free(req);
+    vTaskDelete(NULL);
+}
+
+static void cmd_sd_test(const cJSON *root, bool has_id, int id)
+{
+    bool has_bytes = false;
+    int bytes = SD_TEST_DEFAULT_BYTES;
+
+    if (!json_read_int(root, "bytes", &has_bytes, &bytes)) {
+        reply_err(has_id, id, ERR_BAD_ARG);
+        return;
+    }
+    const uint32_t want = (uint32_t)(has_bytes ? bytes : SD_TEST_DEFAULT_BYTES);
+    if (has_bytes && (bytes < SD_TEST_MIN_BYTES || bytes > SD_TEST_MAX_BYTES)) {
+        reply_err(has_id, id, ERR_BAD_ARG);
+        return;
+    }
+
+    /* A dead/missing/exFAT card is a normal, non-fatal answer here. */
+    if (!sdcard_is_mounted()) {
+        reply_sd_test(has_id, id, want, 0, 0, false, "not_mounted");
+        return;
+    }
+    if (s_sd_test_busy) {
+        reply_err_detail_str(has_id, id, ERR_BAD_ARG, "sd_test busy");
+        return;
+    }
+
+    sd_test_req_t *req = calloc(1, sizeof(*req));
+    if (req == NULL) {
+        reply_err(has_id, id, ERR_BAD_ARG);
+        return;
+    }
+    req->has_id = has_id;
+    req->id = id;
+    req->bytes = want;
+
+    s_sd_test_busy = true;
+    if (xTaskCreate(sd_test_task, "sd_test", SD_TEST_TASK_STACK, req, SD_TEST_TASK_PRIO, NULL) !=
+        pdPASS) {
+        s_sd_test_busy = false;
+        free(req);
+        reply_err(has_id, id, ERR_BAD_ARG);
+    }
+}
+
+/* Build the `sd` object (same field set as stats.sd, §3.6) for command replies. */
+static cJSON *sd_state_json(void)
+{
+    sdcard_status_t sd;
+    sdcard_get_status(&sd);
+
+    cJSON *obj = cJSON_CreateObject();
+    if (obj == NULL) {
+        return NULL;
+    }
+    cJSON_AddBoolToObject(obj, "present", sd.present);
+    cJSON_AddBoolToObject(obj, "mounted", sd.mounted);
+    if (sd.err[0] != '\0') {
+        cJSON_AddStringToObject(obj, "err", sd.err);
+    } else {
+        cJSON_AddItemToObject(obj, "err", cJSON_CreateNull());
+    }
+    cJSON_AddStringToObject(obj, "fs", sd.fs);
+    cJSON_AddNumberToObject(obj, "capacity_mb", (double)sd.capacity_mb);
+    if (sd.free_mb >= 0) {
+        cJSON_AddNumberToObject(obj, "free_mb", (double)sd.free_mb);
+    } else {
+        cJSON_AddItemToObject(obj, "free_mb", cJSON_CreateNull());
+    }
+    cJSON_AddStringToObject(obj, "cid", sd.cid);
+    cJSON_AddStringToObject(obj, "type", sd.type);
+    if (sd.bus[0] != '\0') {
+        cJSON_AddStringToObject(obj, "bus", sd.bus);
+    } else {
+        cJSON_AddItemToObject(obj, "bus", cJSON_CreateNull());
+    }
+    if (sd.cd_known) {
+        cJSON_AddBoolToObject(obj, "cd", sd.cd_present);
+    } else {
+        cJSON_AddItemToObject(obj, "cd", cJSON_CreateNull());
+    }
+    cJSON *tries = cJSON_AddArrayToObject(obj, "tries");
+    if (tries != NULL) {
+        for (int i = 0; i < sd.try_count && i < SDCARD_MAX_TRIES; i++) {
+            cJSON *item = cJSON_CreateObject();
+            if (item == NULL) {
+                break;
+            }
+            cJSON_AddStringToObject(item, "bus", sd.tries[i].bus);
+            if (sd.tries[i].err[0] != '\0') {
+                cJSON_AddStringToObject(item, "err", sd.tries[i].err);
+            } else {
+                cJSON_AddItemToObject(item, "err", cJSON_CreateNull());
+            }
+            cJSON_AddItemToArray(tries, item);
+        }
+    }
+    return obj;
+}
+
+/* protocol.md §3.8: sd_remount (unmount -> probe/mount again, no reboot). */
+static void cmd_sd_remount(bool has_id, int id)
+{
+    if (s_sd_test_busy) {
+        reply_err_detail_str(has_id, id, ERR_BAD_ARG, "sd busy");
+        return;
+    }
+    s_sd_test_busy = true;
+    const esp_err_t err = sdcard_remount();
+    s_sd_test_busy = false;
+
+    cJSON *obj = resp_new(true, has_id, id);
+    if (obj == NULL) {
+        return;
+    }
+    cJSON *sd = sd_state_json();
+    if (sd != NULL) {
+        cJSON_AddItemToObject(obj, "sd", sd);
+    }
+    cJSON_AddBoolToObject(obj, "remount_ok", err == ESP_OK);
+    resp_send(obj);
+}
+
+#define SD_FORMAT_TASK_STACK 8192
+
+typedef struct {
+    bool has_id;
+    int id;
+} sd_format_req_t;
+
+/* Runs off the RX task: formatting a 64 GB card writes both FATs (tens of MB)
+ * and then the 1 MB verification, so the UART task must stay free. */
+static void sd_format_task(void *arg)
+{
+    sd_format_req_t *req = (sd_format_req_t *)arg;
+    sdcard_format_result_t res;
+    const esp_err_t rc = sdcard_format_fat32(&res);
+
+    uint32_t w_kbps = 0;
+    uint32_t r_kbps = 0;
+    bool verify = false;
+    char test_err[96] = "";
+    if (res.mounted_after) {
+        /* Right after f_mkfs a large card can spend a moment on internal
+         * erase/GC; a long SDMMC transaction during that window used to trip
+         * the interrupt watchdog (rst:0x7 HP_SYS_HP_WDT_RESET).  Give the card
+         * 2 s to settle before the 1 MB verification. */
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        (void)sdcard_run_test(SD_TEST_DEFAULT_BYTES, &w_kbps, &r_kbps, &verify, test_err,
+                              sizeof(test_err));
+        if (test_err[0] != '\0') {
+            /* One retry: a just-formatted card may still be busy internally. */
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            w_kbps = 0;
+            r_kbps = 0;
+            verify = false;
+            test_err[0] = '\0';
+            (void)sdcard_run_test(SD_TEST_DEFAULT_BYTES, &w_kbps, &r_kbps, &verify,
+                                  test_err, sizeof(test_err));
+        }
+    }
+
+    cJSON *obj = resp_new(rc == ESP_OK && res.ok, req->has_id, req->id);
+    if (obj != NULL) {
+        cJSON *o = cJSON_AddObjectToObject(obj, "sd_format");
+        if (o != NULL) {
+            cJSON_AddStringToObject(o, "confirm", "ERASE");
+            cJSON *before = cJSON_AddObjectToObject(o, "before");
+            if (before != NULL) {
+                cJSON_AddStringToObject(before, "cid", res.before_cid);
+                cJSON_AddStringToObject(before, "type", res.before_type);
+                cJSON_AddStringToObject(before, "fs", res.before_fs);
+                cJSON_AddNumberToObject(before, "capacity_mb",
+                                        (double)res.before_capacity_mb);
+            }
+            cJSON *after = cJSON_AddObjectToObject(o, "after");
+            if (after != NULL) {
+                cJSON_AddBoolToObject(after, "mounted", res.mounted_after);
+                cJSON_AddStringToObject(after, "fs", res.fs_after);
+                cJSON_AddNumberToObject(after, "capacity_mb",
+                                        (double)res.capacity_mb_after);
+                if (res.free_mb_after >= 0) {
+                    cJSON_AddNumberToObject(after, "free_mb", (double)res.free_mb_after);
+                } else {
+                    cJSON_AddItemToObject(after, "free_mb", cJSON_CreateNull());
+                }
+                cJSON_AddStringToObject(after, "bus", res.bus);
+            }
+            cJSON *test = cJSON_AddObjectToObject(o, "sd_test");
+            if (test != NULL) {
+                cJSON_AddNumberToObject(test, "bytes", (double)SD_TEST_DEFAULT_BYTES);
+                cJSON_AddNumberToObject(test, "write_kbps", (double)w_kbps);
+                cJSON_AddNumberToObject(test, "read_kbps", (double)r_kbps);
+                cJSON_AddBoolToObject(test, "verify", verify);
+                cJSON_AddStringToObject(test, "path", SDCARD_TEST_PATH);
+                if (test_err[0] != '\0') {
+                    cJSON_AddStringToObject(test, "err", test_err);
+                } else {
+                    cJSON_AddItemToObject(test, "err", cJSON_CreateNull());
+                }
+            }
+            if (res.err[0] != '\0') {
+                cJSON_AddStringToObject(o, "err", res.err);
+            } else {
+                cJSON_AddItemToObject(o, "err", cJSON_CreateNull());
+            }
+        }
+        resp_send(obj);
+    }
+
+    s_sd_test_busy = false;
+    free(req);
+    vTaskDelete(NULL);
+}
+
+/* protocol.md §3.9: sd_format -- DESTRUCTIVE, needs the literal confirm token. */
+static void cmd_sd_format(const cJSON *root, bool has_id, int id)
+{
+    const cJSON *jconfirm = cJSON_GetObjectItemCaseSensitive(root, "confirm");
+    if (!cJSON_IsString(jconfirm) || jconfirm->valuestring == NULL ||
+        strcmp(jconfirm->valuestring, "ERASE") != 0) {
+        reply_err_detail_str(has_id, id, ERR_BAD_ARG, "confirm:\"ERASE\" required");
+        return;
+    }
+    const cJSON *jfs = cJSON_GetObjectItemCaseSensitive(root, "fs");
+    if (jfs != NULL && (!cJSON_IsString(jfs) || jfs->valuestring == NULL ||
+                        strcmp(jfs->valuestring, "fat32") != 0)) {
+        reply_err_detail_str(has_id, id, ERR_BAD_ARG, "only fs:\"fat32\"");
+        return;
+    }
+    if (s_sd_test_busy) {
+        reply_err_detail_str(has_id, id, ERR_BAD_ARG, "sd busy");
+        return;
+    }
+
+    sd_format_req_t *req = calloc(1, sizeof(*req));
+    if (req == NULL) {
+        reply_err(has_id, id, ERR_BAD_ARG);
+        return;
+    }
+    req->has_id = has_id;
+    req->id = id;
+
+    s_sd_test_busy = true;
+    if (xTaskCreate(sd_format_task, "sd_format", SD_FORMAT_TASK_STACK, req,
+                    SD_TEST_TASK_PRIO, NULL) != pdPASS) {
+        s_sd_test_busy = false;
+        free(req);
+        reply_err(has_id, id, ERR_BAD_ARG);
+    }
+}
+
 static void cmd_set(const cJSON *root, bool has_id, int id)
 {
     const cJSON *jkey = cJSON_GetObjectItemCaseSensitive(root, "key");
@@ -491,23 +828,65 @@ static void cmd_set(const cJSON *root, bool has_id, int id)
     }
     const int value = (int)raw;
 
-    if (strcmp(jkey->valuestring, "safety_timeout_ms") != 0) {
+    /* protocol.md v1.2 §10.4: thermal thresholds are configurable at runtime. */
+    int warn_c = 0;
+    int throttle_c = 0;
+    thermal_get_thresholds(&warn_c, &throttle_c);
+
+    if (strcmp(jkey->valuestring, "safety_timeout_ms") == 0) {
+        if (value < 0 || value > SAFETY_TIMEOUT_MAX_MS) {
+            reply_err(has_id, id, ERR_BAD_ARG);
+            return;
+        }
+        s_safety_timeout_ms = (uint32_t)value;
+    } else if (strcmp(jkey->valuestring, "temp_warn_c") == 0) {
+        if (value < THERMAL_MIN_C || value > THERMAL_MAX_C || value >= throttle_c) {
+            reply_err(has_id, id, ERR_BAD_ARG);
+            return;
+        }
+        thermal_set_thresholds(value, throttle_c);
+    } else if (strcmp(jkey->valuestring, "temp_throttle_c") == 0) {
+        if (value < THERMAL_MIN_C || value > THERMAL_MAX_C || value <= warn_c) {
+            reply_err(has_id, id, ERR_BAD_ARG);
+            return;
+        }
+        thermal_set_thresholds(warn_c, value);
+    } else if (strcmp(jkey->valuestring, "dfs") == 0) {
+        /* Runtime PM/DFS switch, protocol.md v1.2 §10.4. 0 = fixed 360 MHz
+         * (stable default), 1 = DFS (idle 40 MHz). */
+        if (!pm_ctl_available()) {
+            reply_err_detail_str(has_id, id, ERR_BAD_ARG, "pm not compiled in");
+            return;
+        }
+        if (value != 0 && value != 1) {
+            reply_err(has_id, id, ERR_BAD_ARG);
+            return;
+        }
+        if (pm_ctl_set_adaptive(value != 0) != ESP_OK) {
+            reply_err_detail_str(has_id, id, ERR_BAD_ARG, "pm_configure_failed");
+            return;
+        }
+    } else {
         reply_err_detail_str(has_id, id, ERR_BAD_ARG, "unsupported key");
         return;
     }
-    if (value < 0 || value > SAFETY_TIMEOUT_MAX_MS) {
-        reply_err(has_id, id, ERR_BAD_ARG);
-        return;
-    }
-
-    s_safety_timeout_ms = (uint32_t)value;
 
     cJSON *obj = resp_new(true, has_id, id);
     if (obj == NULL) {
         return;
     }
-    cJSON_AddStringToObject(obj, "key", "safety_timeout_ms");
+    cJSON_AddStringToObject(obj, "key", jkey->valuestring);
     cJSON_AddNumberToObject(obj, "value", (double)value);
+    cJSON *pm = cJSON_AddObjectToObject(obj, "pm");
+    if (pm != NULL) {
+        uint32_t cur_hz = 0;
+        (void)esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU,
+                                           ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &cur_hz);
+        pm_ctl_fill_json(pm);
+        cJSON_AddNumberToObject(pm, "cur_mhz",
+                                cur_hz > 0 ? (double)(cur_hz / 1000000)
+                                           : (double)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ);
+    }
     resp_send(obj);
 }
 
@@ -1013,6 +1392,10 @@ static void monitor_task(void *arg)
         /* protocol.md §9.5: attach/detach edge detection through tud_mounted() */
         hid_device_service();
 
+        /* protocol.md §10.4: the adaptive governor releases the boost lock
+         * after the hysteresis window with no activity. */
+        pm_ctl_tick();
+
         /* protocol.md §6.1: safety release while something is held */
         const uint32_t timeout = s_safety_timeout_ms;
         if (timeout > 0 && hid_device_has_pressed()) {
@@ -1045,6 +1428,7 @@ void proto_init(void)
     s_last_rx_ms = uart_link_now_ms();
     s_safety_timeout_ms = DEFAULT_SAFETY_TIMEOUT_MS;
     s_seq_abort = false;
+    s_sd_test_busy = false;
 
     s_queue = xQueueCreate(SEQ_QUEUE_LEN, sizeof(seq_job_t *));
     if (s_queue != NULL) {
@@ -1087,6 +1471,14 @@ static void dispatch(const char *cmd, const cJSON *root, bool has_id, int id)
         cmd_ping(has_id, id);
     } else if (strcmp(cmd, "status") == 0) {
         cmd_status(has_id, id);
+    } else if (strcmp(cmd, "stats") == 0) {
+        cmd_stats(has_id, id);
+    } else if (strcmp(cmd, "sd_test") == 0) {
+        cmd_sd_test(root, has_id, id);
+    } else if (strcmp(cmd, "sd_remount") == 0) {
+        cmd_sd_remount(has_id, id);
+    } else if (strcmp(cmd, "sd_format") == 0) {
+        cmd_sd_format(root, has_id, id);
     } else if (strcmp(cmd, "keepalive") == 0) {
         cmd_keepalive(has_id, id);
     } else if (strcmp(cmd, "set") == 0) {
@@ -1171,4 +1563,14 @@ void proto_handle_line(const char *line, size_t len)
     dispatch(jcmd->valuestring, root, has_id, id);
     cJSON_Delete(root);
     s_rx_ok++;
+}
+
+uint32_t proto_rx_ok(void)
+{
+    return s_rx_ok;
+}
+
+uint32_t proto_rx_bad(void)
+{
+    return s_rx_bad;
 }

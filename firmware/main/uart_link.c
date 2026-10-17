@@ -24,6 +24,7 @@ static const char *TAG = "uart_link";
 
 static SemaphoreHandle_t s_tx_mutex;
 static QueueHandle_t s_event_queue;
+static volatile uint32_t s_tx_frames;
 
 QueueHandle_t uart_link_event_queue(void)
 {
@@ -91,6 +92,12 @@ void uart_link_write_line(const char *line)
     if (s_tx_mutex != NULL) {
         xSemaphoreGive(s_tx_mutex);
     }
+    s_tx_frames++;
+}
+
+uint32_t uart_link_tx_frames(void)
+{
+    return s_tx_frames;
 }
 
 uint32_t uart_link_now_ms(void)
