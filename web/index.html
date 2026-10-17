@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0f14">
+<meta name="color-scheme" content="dark">
+<title>P4 HID Agent · 网页仪表盘</title>
+<!-- 无外网依赖：不引用任何 CDN / 外部字体 / 外部图标，全部内联或本地文件 -->
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect x="6" y="6" width="20" height="20" rx="4" fill="none" stroke="currentColor" stroke-width="2"/>
+        <rect x="12" y="12" width="8" height="8" rx="1.5" fill="currentColor"/>
+        <path d="M2 11h4M2 16h4M2 21h4M26 11h4M26 16h4M26 21h4M11 2v4M16 2v4M21 2v4M11 26v4M16 26v4M21 26v4"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <div class="brand-text">
+        <h1>P4 HID Agent</h1>
+        <p class="sub">ESP32-P4 板载状态 · 本机状态</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="pills">
+        <span id="board-status" class="pill pill-wait">板子连接中…</span>
+        <span id="pc-status" class="pill pill-wait">本机连接中…</span>
+      </div>
+      <button id="refresh-btn" class="btn" type="button" title="立即刷新两块数据">⟳ 立即刷新</button>
+    </div>
+  </header>
+
+  <main class="grid">
+
+    <!-- ===================== 板子面板 ===================== -->
+    <section id="board-panel" class="panel panel-board">
+      <div class="panel-head">
+        <div class="panel-title">
+          <span class="dot dot-board" aria-hidden="true"></span>
+          <h2>板子 <span class="sub-inline">ESP32-P4</span></h2>
+          <span id="board-meta" class="meta">proto —</span>
+        </div>
+        <span id="board-updated" class="updated">等待数据</span>
+      </div>
+
+      <div id="board-banner" class="banner hidden" role="status"></div>
+
+      <div id="board-empty" class="empty">
+        <div class="empty-icon" aria-hidden="true">📡</div>
+        <p id="board-empty-text">正在等待板子数据…</p>
+        <small id="board-empty-hint">页面由 PC 上的 hub 托管，每秒读取同源 <code>api/board</code>；hub 通过串口 COM7 采集板子统计。</small>
+      </div>
+
+      <div id="board-body" class="panel-body hidden">
+
+        <div class="metrics">
+          <div class="metric">
+            <span class="metric-label">运行时长</span>
+            <span id="board-uptime" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">CPU 主频</span>
+            <span id="board-freq" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">HID 枚举</span>
+            <span id="board-hid" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">采样窗口</span>
+            <span id="board-window" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">板子温度</span>
+            <span id="board-temp" class="metric-value" title="固件可选字段 temp_c / temp_warn；缺失时显示 —">—</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>双核占用</h3>
+            <span id="cpu-window-hint" class="hint">—</span>
+          </div>
+          <div class="cpu-top">
+            <div class="gauges">
+              <figure class="gauge-fig">
+                <canvas id="cpu-gauge0" class="gauge" width="96" height="96"></canvas>
+                <figcaption>Core 0 · <b id="cpu-val0">—</b></figcaption>
+              </figure>
+              <figure class="gauge-fig">
+                <canvas id="cpu-gauge1" class="gauge" width="96" height="96"></canvas>
+                <figcaption>Core 1 · <b id="cpu-val1">—</b></figcaption>
+              </figure>
+            </div>
+            <div class="legend">
+              <span class="legend-item"><i class="sw sw-core0"></i>Core 0</span>
+              <span class="legend-item"><i class="sw sw-core1"></i>Core 1</span>
+              <span class="legend-note">最近 120 秒</span>
+            </div>
+          </div>
+          <canvas id="cpu-chart" class="chart" aria-label="双核 CPU 占用曲线"></canvas>
+        </div>
+
+        <div class="cards-2">
+          <div class="card">
+            <div class="card-head"><h3>内存</h3></div>
+            <div class="kv-grid">
+              <div class="kv"><span class="k">Heap 空闲</span><b id="heap-free" class="v">—</b></div>
+              <div class="kv"><span class="k">Heap 历史最低</span><b id="heap-min" class="v">—</b></div>
+              <div class="kv"><span class="k">Heap 总量</span><b id="heap-total" class="v">—</b></div>
+            </div>
+            <div class="bar-track"><i id="heap-bar" class="bar-fill bar-cyan" style="width:0%"></i></div>
+            <div class="bar-caption"><span>空闲占比</span><span id="heap-pct">—</span></div>
+            <div class="kv-grid kv-grid-2">
+              <div class="kv"><span class="k">PSRAM 空闲</span><b id="psram-free" class="v">—</b></div>
+              <div class="kv"><span class="k">PSRAM 总量</span><b id="psram-total" class="v">—</b></div>
+            </div>
+            <div class="bar-track"><i id="psram-bar" class="bar-fill bar-violet" style="width:0%"></i></div>
+            <div class="bar-caption"><span>空闲占比</span><span id="psram-pct">—</span></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>TF 卡</h3><span id="sd-state" class="hint">—</span></div>
+            <div class="kv-grid">
+              <div class="kv"><span class="k">类型</span><b id="sd-type" class="v">—</b></div>
+              <div class="kv"><span class="k">容量</span><b id="sd-capacity" class="v">—</b></div>
+              <div class="kv"><span class="k">可用</span><b id="sd-free" class="v">—</b></div>
+              <div class="kv"><span class="k">写速度</span><b id="sd-write" class="v">—</b></div>
+              <div class="kv"><span class="k">读速度</span><b id="sd-read" class="v">—</b></div>
+              <div class="kv"><span class="k">CID</span><b id="sd-cid" class="v mono small">—</b></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>网络</h3><span id="net-state" class="hint">—</span></div>
+            <div class="kv-grid">
+              <div class="kv"><span class="k">IP</span><b id="net-ip" class="v mono">—</b></div>
+              <div class="kv"><span class="k">链路速率</span><b id="net-link" class="v">—</b></div>
+              <div class="kv"><span class="k">DHCP</span><b id="net-dhcp" class="v">—</b></div>
+              <div class="kv"><span class="k">网关</span><b id="net-gw" class="v mono">—</b></div>
+              <div class="kv"><span class="k">MAC</span><b id="net-mac" class="v mono small">—</b></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><h3>UART 计数</h3></div>
+            <div class="kv-grid">
+              <div class="kv"><span class="k">收帧正常</span><b id="uart-rx-ok" class="v">—</b></div>
+              <div class="kv"><span class="k">收帧异常</span><b id="uart-rx-bad" class="v">—</b></div>
+              <div class="kv"><span class="k">发帧</span><b id="uart-tx-ok" class="v">—</b></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>FreeRTOS 任务</h3>
+            <span id="task-count" class="hint">—</span>
+          </div>
+          <div class="table-scroll table-scroll-tasks">
+            <table id="task-table">
+              <thead>
+                <tr><th>任务</th><th>优先级</th><th>状态</th><th>栈余量 HWM</th></tr>
+              </thead>
+              <tbody id="task-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===================== 本机面板 ===================== -->
+    <section id="pc-panel" class="panel panel-pc">
+      <div class="panel-head">
+        <div class="panel-title">
+          <span class="dot dot-pc" aria-hidden="true"></span>
+          <h2>本机 <span class="sub-inline">PC</span></h2>
+          <span class="meta mono">同源 · api/pc</span>
+        </div>
+        <span id="pc-updated" class="updated">等待数据</span>
+      </div>
+
+      <div id="pc-banner" class="banner hidden" role="status"></div>
+
+      <div id="pc-empty" class="empty">
+        <div class="empty-icon" aria-hidden="true">💻</div>
+        <p>正在等待本机数据…</p>
+        <small>本机数据由 hub 采集（CPU/内存/GPU/进程/NPU），页面与接口同源，无需跨域。</small>
+      </div>
+
+      <div id="pc-body" class="panel-body hidden">
+
+        <div class="metrics">
+          <div class="metric">
+            <span class="metric-label">CPU 总占用</span>
+            <span id="pc-cpu-total-val" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">CPU 主频</span>
+            <span id="pc-cpu-mhz" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">内存占用</span>
+            <span id="pc-mem-pct" class="metric-value">—</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">开机时长</span>
+            <span id="pc-uptime" class="metric-value">—</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>CPU 每核占用</h3>
+            <span id="pc-core-count" class="hint">—</span>
+          </div>
+          <div class="pc-cpu-top">
+            <figure class="gauge-fig gauge-fig-lg">
+              <canvas id="pc-cpu-gauge" class="gauge" width="112" height="112"></canvas>
+              <figcaption>总占用 <b id="pc-cpu-total-ring">—</b></figcaption>
+            </figure>
+            <div id="pc-cores" class="core-bars"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>内存</h3><span id="pc-mem-extra" class="hint">—</span></div>
+          <div class="kv-grid">
+            <div class="kv"><span class="k">已用</span><b id="pc-mem-used" class="v">—</b></div>
+            <div class="kv"><span class="k">总量</span><b id="pc-mem-total" class="v">—</b></div>
+          </div>
+          <div class="bar-track"><i id="pc-mem-bar" class="bar-fill bar-amber" style="width:0%"></i></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>GPU</h3><span class="hint">nvidia-smi</span></div>
+          <div id="pc-gpu-list" class="gpu-list"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>NPU</h3><span class="hint">自动探测</span></div>
+          <div id="pc-npu" class="npu">探测中…</div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>进程 Top</h3>
+            <div class="sort-group">
+              <button id="sort-cpu" class="chip chip-active" type="button">按 CPU</button>
+              <button id="sort-mem" class="chip" type="button">按内存</button>
+            </div>
+            <span id="pc-proc-count" class="hint">—</span>
+          </div>
+          <div class="table-scroll table-scroll-proc">
+            <table id="pc-proc-table">
+              <thead><tr><th>进程</th><th>PID</th><th>CPU%</th><th>内存</th></tr></thead>
+              <tbody id="pc-proc-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <span>板子：同源 <code>api/board</code>（hub 经 COM7 串口采集） · 本机：同源 <code>api/pc</code></span>
+    <span>每秒自动刷新 · <span id="footer-time">—</span></span>
+    <span>断线自动重连，数据超时 3.2 s 自动标灰</span>
+  </footer>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
