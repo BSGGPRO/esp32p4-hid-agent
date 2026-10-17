@@ -188,6 +188,22 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
   页面胶囊显示「板子透传中」+ 黄色提示条（不是故障），透传结束后自动恢复轮询。
 - 手机竖屏自适应：单列布局、指标 2 列、表格横向滚动、触控友好间距。
 
+### 4.4 动态调频（DFS）开关
+
+TF 卡卡片下方有一张「动态调频（DFS）」卡片，数据来自 `stats.pm`（固件 v1.2 可选字段）：
+
+| 开关 | `stats.pm.governor` | 板子行为 |
+|---|---|---|
+| 关（默认） | `fixed360` | 固定 360 MHz，SD 卡 / USB 最稳 |
+| 开 | `adaptive` | 智能调度：有活动立即升到 360 MHz；连续 ≥500 ms 无活动才降到 40 MHz；SD/USB 传输期间持锁禁止切频；`temp_c ≥ 70` 时空闲阈值缩到 100 ms |
+
+- 开关状态**不持久化**：板子复位后回到 `fixed360`（安全默认），这是有意设计。
+- 卡片同时显示 `boosts` / `downs` / `last_reason`，用来证明调度器真的在工作（只开不降 = 假功能）。
+- 固件没上报 `pm` 字段时，开关自动禁用并提示「固件未上报」。
+- 背景：裸 DFS（无 governor）会让 SD 大写入触发 `rst:0x7 (HP_SYS_HP_WDT_RESET)`；
+  adaptive governor 的持锁 + 滞回规避了该问题，实测 15/15 次 1 MB 读写无复位、延迟无差异。
+  详见 `docs/evidence/fw-governor.txt`、`fw-pm-toggle.txt`。
+
 ---
 
 ## 5. 接口契约
@@ -257,6 +273,25 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 - 串口未打开时直接关闭连接（不假装成功）。
 - 实测（live hub，板子在线）：ping 往返 ~16 ms；stats 响应 1186 B 完整透传；
   客户端断开后 `/api/board` 在 2 s 内恢复 `age_ms < 500`。
+
+### 5.5 `POST /api/cmd`（网页按钮 → 板子命令）
+
+`/api/cmd` 让页面能直接给板子发一条 JSON 命令（内部与 stats 轮询共用同一把 `_poll_lock` 串行化，
+不会和 1 Hz 轮询抢串口）。
+
+```
+POST /api/cmd
+Content-Type: application/json
+
+{"cmd":"set","key":"dfs","value":1}
+```
+
+白名单：`ping`、`stats`、`set`、`sd_remount`、`sd_test`。
+另外 `sd_format`（销毁性）**仅允许 127.0.0.1/::1** 且请求体必须带 `"confirm":"ERASE"`，
+其余命令一律 `400 {"ok":false,"err":"cmd_not_allowed", "allowed":[...]}`。
+
+板子离线/被透传占用时返回 `{"ok":false,"err":"board_offline"|"passthrough_active"|"board_busy"}`，
+页面据此回滚开关并提示，不会假装成功。
 
 ---
 
