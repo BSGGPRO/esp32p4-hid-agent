@@ -444,3 +444,21 @@ tud_hid_mouse_report(HID_ITF_PROTOCOL_MOUSE, buttons, dx, dy, wheel, pan);
    `{"cmd":"set","id":1,"key":"temp_warn_c","value":70}`、`{"cmd":"set","id":2,"key":"temp_throttle_c","value":80}`（20–100 °C，须 warn < throttle）。
 6. **失败安全**：任何 `esp_pm_configure` 失败 → 释放锁、回退 fixed360、`set` 返回 `{"ok":false,...,"detail":"pm_configure_failed"}`，绝不停在半配置状态。
 7. **不做的事**：不轮询 TF 卡（`stats` 只读挂载时缓存的 `s_status`，无 SD 事务）；日志保持 `ESP_LOG_NONE`；无忙等。
+
+### 10.5 测试纪律：禁止向宿主桌面注入键鼠输出（2026-10-17 事故后定规）
+
+**背景**：2026-10-17 的 10 分钟 soak 脚本把 `key_tap("a")` 放在主循环里（约 3 次/秒），板子作为真实 HID 键盘把 `a` 连续打进了用户正在打字的前台窗口。这是测试脚本设计错误，不是固件缺陷，但代价是直接干扰了用户，必须用规则堵死。
+
+**硬规则（对任何 soak / 回归 / 演示 / 自动化脚本生效）**：
+
+1. **禁止键盘输出**：`key_tap`、`key_press`、`key_release`、`key_type` 等一切会产生 HID 键盘报文打到宿主桌面的命令，在无人值守/长跑脚本里**一律禁用**。
+2. **鼠标输出只允许零位移**：`mouse_move` 仅允许 `dx=0, dy=0`（只覆盖 HID 报文发送路径，光标不动、不点击）；`mouse_click`、非零位移的 `mouse_move`、拖拽类命令同样禁用。
+3. **hub 侧同等护栏（已实现）**：`POST /api/cmd` 的 `mouse_move` 只有在 `dx==0 && dy==0` 时才放行，非零位移返回 `400 mouse_move_blocked`；`key_*` 类命令不在白名单，无条件拒绝。即使脚本写错，也无法从 hub 这一路把键鼠送进用户桌面。
+4. **HID 健康度的替代验证**（不用真实键鼠输出）：
+   - `stats.hid.mounted` 在整段测试里持续为 `true`；
+   - 板端 `hid_unmounted` / `hid_mounted` 异步事件计数为 0（`hid_mon` 25 ms 边沿检测）；
+   - 宿主侧 USB PnP 采样：`HID\VID_303A&PID_4004&COL01/COL02` 与 `USB\VID_303A&PID_4004\80F1B2D39CE6` 的 Status 无变化；
+   - `uart.rx_bad` 不因 HID 相关路径增长。
+5. **真需要键鼠输出时**：必须由用户明确要求（例如"在画图里画一张图"），且限制在用户指定的目标窗口与时段内，用完立即 `release_all`。
+
+**当前 soak 基线**（`docs/evidence/fw-soak-test.py`）：`stats` 1 Hz + `ping` 5 s + `sd_test` 1 MB 每 35 s + `mouse_move(dx=0,dy=0)` 每 3 s，非法帧/未知命令/`set` 阈值/`release_all` 注入均不产生键鼠输出。
