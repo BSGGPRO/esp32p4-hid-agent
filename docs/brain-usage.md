@@ -137,6 +137,9 @@ python pc\hub.py                                     # hub 端（web-ui 维护�
 - `pc/transport_tcp.py` 与 `UartTransport` 同接口（`open/write/readline/close/drain/probe`），
   帧格式逐字一致，协议层零改动。
 - 注意 `--port` 始终指**串口**；hub 端口用 `--tcp-port`（默认 8766）。
+- **真机已验证**（2026-10-17 21:46，hub PID 40444，证据 `docs/evidence/tcp-hub-e2e-20261017-214603.txt`）：
+  `transport=tcp`（未回退）、`move(12,0)` 光标 Δ=(12,0)、`locate(1500,700,tol=1)` 3 次迭代 err=(-1,0)、
+  TCP 计数 bytes_rx=561 / bytes_tx=252；期间未直连 COM7、未抢 board_lock（锁由 `web-ui:hub` 持有）。
 
 ### 3.4 卡死保护
 
