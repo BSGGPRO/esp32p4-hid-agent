@@ -184,6 +184,8 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
   - `board_busy`：`board_lock` 被别人占着（fw-core 烧录 / draw 绘图）；
   - `board_no_stats`：串口通了但固件不回 `stats`（固件版本旧）。
   页面左上胶囊与面板内提示条会显示具体原因，并持续重试。
+- **透传中**（`passthrough=true`）：brain.py 正通过 `127.0.0.1:8766` 占用串口，hub 暂停 stats；
+  页面胶囊显示「板子透传中」+ 黄色提示条（不是故障），透传结束后自动恢复轮询。
 - 手机竖屏自适应：单列布局、指标 2 列、表格横向滚动、触控友好间距。
 
 ---
@@ -212,7 +214,9 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 ```
 
 - `stats` 对象就是 protocol.md §3.6 的冻结 schema，hub 原样透传（不裁剪未知字段）。
-- hub 从 UART 响应里取数据，同时兼容 `{"ok":true,"id":N,"stats":{...}}` 与平铺字段两种实现。
+- hub 从 UART 响应里取数据，同时兼容 `{"ok":true,"id":N,"stats":{...}}` 与平铺字段两种实现，
+  但 **对外 `/api/board` 一律是「顶层 stats」**：页面/第三方直接读 `resp.stats.cpu.core0_pct`，
+  不要再套一层 `stats.stats`（app.js 用 `renderBoard(raw.stats)`，selftest 有断言防回退）。
 - `age_ms` 是缓存年龄：> 3200 时页面标灰。
 
 ### 5.2 `GET /api/pc`
@@ -241,11 +245,18 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 
 给 `pc/brain.py` 用的裸串口替代：
 
-- 只监听本机回环，**一次只服务一个客户端**；已有客户端时新连接被立即关闭。
-- 连上后把客户端字节**原样**写入 COM7，把 COM7 字节原样写回客户端（JSON-lines 协议不变）。
-- 透传期间 **暂停 stats 轮询**（否则两边的响应会互相抢）；断开后自动恢复，页面最多短暂标灰。
+- 只监听本机回环，**一次只服务一个客户端**；已有客户端时新连接被立即关闭并记日志。
+- **每条连接一个独立线程**（accept 循环只负责接客），所以某个客户端卡住/僵死不会堵住
+  accept、不会塞满 backlog；连接异常/EOF 一定走 `finally`：关 socket、清 active、恢复 stats 轮询。
+- 连上后把客户端字节**原样**写入 COM7，把 COM7 字节原样写回客户端（JSON-lines 协议不变，
+  不额外注入 ready 行，brain.py 侧无需改协议）。
+- 切换过程是「两步握手」：先标记 `passthrough_requested` 让 manager 不再发起新轮询，
+  再等在途的那次 stats 往返结束（≤0.9 s）后切模式并清空串口/队列 —— 避免 poll 线程
+  长期持锁把透传饿死（旧版挂死 bug 的根因）。
+- 透传期间 **stats 暂停**；断开后自动恢复，页面短暂标灰，板子面板显示「板子透传中」。
 - 串口未打开时直接关闭连接（不假装成功）。
-- 注意：透传期间页面不再刷新板子数据，这是预期行为。
+- 实测（live hub，板子在线）：ping 往返 ~16 ms；stats 响应 1186 B 完整透传；
+  客户端断开后 `/api/board` 在 2 s 内恢复 `age_ms < 500`。
 
 ---
 
@@ -273,6 +284,9 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 - 所有本机结果缓存 **1 s**，HTTP 请求只读内存缓存，不会因为手机多开几个页面而增加采样开销。
 - 进程 `cpu_pct` 第一轮为 `null`（还没有差值），页面显示 `—`；第二轮起有值。
 - GPU 若出现 `N/A`（部分笔电独显空闲时不上报利用率），对应字段为 `null`，页面显示 `—`。
+- Windows 控制台子进程输出统一用 `_decode_console()`：先 UTF-8、再 GBK、最后 replace 解码，
+  避免 PowerShell/netsh 输出编码不一致时把采样线程打挂（旧版 `text=True` 严格 GBK 解码崩过）。
+- hub 的 stdout/stderr 强制 `line_buffering=True`，后台重定向到文件时日志不会攒 8 KB 才出。
 
 ---
 
@@ -283,28 +297,41 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 & $PY docs\evidence\web-selftest.py
 ```
 
-最近一次结果：**64/64 PASS**（证据 [web-selftest.log](evidence/web-selftest.log)）。覆盖：
+最近一次结果：**69/69 PASS**（证据 [web-selftest.log](evidence/web-selftest.log)）。覆盖：
 
 1. **前端静态检查**：三个文件存在、相对路径引用、69 个关键元素 id、app.js 引用的 id 全部存在、
-   `api/board`/`api/pc`、1 s 轮询、超时标灰、三种离线原因、v1.2 stats 全字段（含可选 `temp_c/temp_warn`）、
-   无外网 CDN/外部字体/外部脚本、手机媒体查询、JS 括号配平。
+   `api/board`/`api/pc`、1 s 轮询、超时标灰、三种离线原因、透传中提示、v1.2 stats 全字段
+   （含可选 `temp_c/temp_warn`）、无外网 CDN/外部字体/外部脚本、手机媒体查询、JS 括号配平。
 2. **hub 离线路径**（`--serial COM99 --no-lock --no-firewall --port 0 --tcp-port 0`）：
    `/`、`/app.js`、`/style.css` 200 且 Content-Type 正确；`/api/board` = `board_offline`；
    `/api/pc` 真实数据（32 核 CPU、内存、GPU、进程 CPU%、NPU、开机时长）；
    `/api/health`；OPTIONS/CORS；未知路径 404；透传端口在串口离线时立即断开；
    `/api/shutdown` 后进程 exit 0；`--no-lock` 不碰别人的 `.board.lock`。
 3. **解析器单测**：`extract_stats` 兼容嵌套/平铺两种 stats 响应，错误响应返回 None。
+4. **透传回归压测（假串口 + 真 TcpBridge，无硬件依赖）**：3 轮 ping+stats 长行往返、
+   连上即断的恶意客户端不影响 accept 循环、第二个客户端被拒绝、断开后 stats 自动恢复
+   —— 专门锁住旧版「8766 挂死 / CloseWait 堵死 accept」缺陷。
+
+真机联调（live hub + COM7 + v1.2 固件）：
+
+- [web-board-online.txt](evidence/web-board-online.txt)：**22/22 PASS**。`/api/board` ok=true、
+  `stats.proto=v1.2`、CPU/内存/任务/SD/网络/HID/UART 字段齐全、页面读取的 30 条字段路径全在顶层；
+  8766 透传 ping+stats 两轮真实回包（原始字节 1341 B，>512 B 长行不截断）；断开后轮询恢复；
+  `/api/pc` 同时可用。
+- [web-board-raw.json](evidence/web-board-raw.json)：真机 `/api/board` 原始响应（可直接当解析样例）。
+- [web-hub-fixes.txt](evidence/web-hub-fixes.txt)：GBK 解码、NPU/GPU 探测、`lan_ips`、防火墙提示、
+  行缓冲等修复的本地验证输出。
 
 其它原始证据：
 
-- [web-hub-curls.txt](evidence/web-hub-curls.txt)：真实 curl 输出（静态页头、两个 API、health、OPTIONS、404、shutdown）。
+- [web-hub-curls.txt](evidence/web-hub-curls.txt)：离线路径真实 curl 输出（静态页头、两个 API、health、OPTIONS、404、shutdown）。
 - [web-preview.txt](evidence/web-preview.txt)：`python -m http.server` 纯静态预览（此时 api 404，页面进离线态）。
 
-**边界（尚未验证，不写成已联调）**：
+**边界（诚实说明）**：
 
-- 板子在线路径（`/api/board` 真的带 stats）要等带 v1.2 stats 的固件烧录后验证；hub 侧解析已按冻结 schema 写好并有单测。
-- TCP 透传的真实双向 JSON 收发要等 `pc/brain.py` 的 TcpTransport 联调。
-- 本模型没有浏览器/视觉能力，**没有**做像素级渲染截图验证；页面正确性用 HTML id/字符串/接口断言代替。
+- 板子在线路径已用真机 + v1.2 固件验证（见上）；透传已用真实 socket 往返验证。
+- 本模型没有浏览器/视觉能力，**没有**做像素级渲染/截图验证；页面正确性用 HTML id/字符串/接口断言代替。
+- 透传的「brain.py `--transport tcp` 全流程」由 draw 侧联调；hub 侧 8766 的字节级收发已验证。
 
 ---
 
@@ -320,7 +347,9 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 | 板子数据一直 0% | 固件首次 stats 窗口不足；连续两次调用后会正常 |
 | `/api/pc` 进程为空 | PowerShell 启动慢/被杀软拦；看 hub 日志；10 s 内会恢复 |
 | 透传连上立刻断开 | 串口未打开（看 `/api/board` 的 `err`）或已有另一个透传客户端 |
+| 页面显示「板子透传中」 | brain.py 正占用 8766，属正常；透传结束后自动恢复 |
 | hub 退出后板子还在复位 | CH340 打开/关闭会拉 DTR/RTS，属正常硬件行为 |
+| hub 日志看不到实时输出 | 代码已强制行缓冲；若仍不显示，启动时加 `PYTHONUNBUFFERED=1` |
 
 ---
 
@@ -335,6 +364,8 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 | `pc/transport_uart.py` | 复用其 DCB/COMMTIMEOUTS 结构与端口名规范化（hub 自己管常驻句柄） |
 | `tools/board_lock.py` | 串口跨进程互斥锁（hub 进程级持有） |
 | `docs/evidence/web-selftest.py` | 自检脚本（`web-*` 证据命名） |
+| `docs/evidence/web-board-online.py` | 真机联调脚本（需要 hub 已在跑 + 板子在线） |
+| `docs/evidence/web-hub-fixes.py` | GBK 解码 / NPU·GPU 探测 / 行缓冲修复验证 |
 
 ---
 
@@ -352,3 +383,17 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 | 串口独占 | 无（PC 其他脚本可随意开 COM7） | hub 持锁独占，其它程序走 8766 透传或等锁 |
 
 `web/` 下三个文件名保持不变（便于将来板子恢复网络出口时直接复用）。
+
+### 10.1 2026-10-17 联调修复记录
+
+真机联调（v1.2 固件 + live hub）暴露并修复了 3 个 hub 缺陷：
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | 8766 透传：客户端连上收不到数据，socket 停 CloseWait，accept 被占死、backlog 满后新连接超时 | ① `_manager` 把 `_poll_lock` 连同 1 s sleep 一起持有，透传线程抢锁被饿死；② accept 循环里直接 `_serve_client`，一个卡住的客户端堵死所有后续连接；③ `TcpBridge._stop` 覆盖了 `Thread._stop()` 方法 | 轮询只在这个锁里做「发命令→等响应」，sleep 移到锁外；透传前先 `passthrough_requested` 举手，再等 ≤0.9 s 在途往返；每条连接起独立线程、accept 只管接客；连接生命周期 try/finally 必恢复轮询；`_stop` 改名 `_stop_event` |
+| 2 | 后台管道线程 `UnicodeDecodeError: 'gbk' codec can't decode byte 0x87`，NPU/PowerShell 采样线程挂 | `subprocess.run(..., text=True)` 用系统 GBK 严格解码，而 PowerShell 输出是 UTF-8 | 新增 `_decode_console()`（UTF-8 → GBK → replace），所有子进程改为 `capture_output=True` 拿 bytes 再解码 |
+| 3 | 后台跑时 stderr 攒够 8 KB 才输出，排障困难 | Python stdout/stderr 重定向到文件时默认块缓冲 | `reconfigure(errors="replace", line_buffering=True)`；`logging` 的 StreamHandler 本就每条 flush |
+
+修复后回归：`docs/evidence/web-selftest.py` 69/69 PASS（含假串口透传压测），
+真机 `docs/evidence/web-board-online.py` 22/22 PASS（stats + 8766 ping/stats 往返）。
+**注意**：修复在 hub 进程启动时加载，改完代码需重启 hub 生效（`curl http://127.0.0.1:8765/api/shutdown` 后再启动）。

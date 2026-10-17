@@ -177,7 +177,8 @@
   // 状态
   // ------------------------------------------------------------------
   var state = {
-    board: { ok: false, fails: 0, lastOk: 0, lastErr: null, err: '', detail: '', stats: null },
+    board: { ok: false, fails: 0, lastOk: 0, lastErr: null, err: '', detail: '',
+             stats: null, passthrough: false },
     pc: { ok: false, fails: 0, lastOk: 0, lastErr: null, data: null },
     procSort: 'cpu'
   };
@@ -805,6 +806,7 @@
         state.board.err = '';
         state.board.detail = '';
         state.board.stats = raw.stats;
+        state.board.passthrough = raw.passthrough === true;
         renderBoard(raw.stats);
         toggleHidden($('board-empty'), true);
         toggleHidden($('board-body'), false);
@@ -812,6 +814,7 @@
         var e = new Error(raw.err || 'board_offline');
         e.code = raw.err || 'board_offline';
         e.detail = raw.detail || '';
+        e.passthrough = raw.passthrough === true;
         throw e;
       }
     }).catch(function (err) {
@@ -819,6 +822,7 @@
       state.board.fails += 1;
       state.board.err = (err && err.code) || '';
       state.board.detail = (err && err.detail) || '';
+      state.board.passthrough = err && err.passthrough === true;
       state.board.lastErr = String((err && err.detail) || (err && err.message) || err);
     }).then(function () {
       boardBusy = false;
@@ -884,7 +888,24 @@
 
     toggleClass(boardPanel, 'stale', hasStats && (boardStale || !state.board.ok || Boolean(errText)));
 
-    if (state.board.ok && !boardStale) {
+    if (state.board.passthrough) {
+      // hub 把串口暂时让给 brain.py 的 TCP 透传：stats 暂停，不是故障
+      boardPill.textContent = '板子透传中';
+      boardPill.className = 'pill pill-warn';
+      setText('board-updated', '透传中 · 最后更新 ' + fmtAgo(boardAge));
+      toggleClass(boardPanel, 'stale', true);
+      if (boardBanner) {
+        boardBanner.classList.remove('hidden');
+        boardBanner.classList.add('warn');
+        boardBanner.classList.remove('err');
+        boardBanner.textContent = '板子串口正被 TCP 透传占用（brain.py），stats 暂停刷新；'
+          + '透传结束后会自动恢复（数据超过 3.2 s 未更新会标灰）。';
+      }
+      if (hasStats) {
+        toggleHidden($('board-empty'), true);
+        toggleHidden($('board-body'), false);
+      }
+    } else if (state.board.ok && !boardStale) {
       boardPill.textContent = '板子在线';
       boardPill.className = 'pill pill-ok';
       toggleHidden(boardBanner, true);

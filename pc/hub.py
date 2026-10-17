@@ -310,6 +310,7 @@ class BoardLink:
         self._read_stop = threading.Event()
         self._mode_lock = threading.Lock()
         self._poll_lock = threading.Lock()   # 保证 stats 轮询与透传切换互斥
+        self._passthrough_requested = threading.Event()  # 透传方已「举手」，manager 停发新轮询
         self._mode = "poll"          # poll / passthrough
         self._linebuf = bytearray()
         self._pass_queue: queue.Queue = queue.Queue()
@@ -438,14 +439,22 @@ class BoardLink:
                     if not self._open_serial():
                         self._sleep(2.0)
                         continue
-                if self.passthrough:
-                    self._sleep(0.2)
+                if self.passthrough or self._passthrough_requested.is_set():
+                    self._sleep(0.1)
                     continue
-                with self._poll_lock:
-                    if self.passthrough:
-                        self._sleep(0.2)
+                # 注意：锁只包住「发命令 → 等响应」这一次往返，睡眠必须在锁外，
+                # 否则透传线程会一直被 1 s 一轮的轮询饿死（旧版 bug：8766 挂死）。
+                t0 = time.monotonic()
+                if not self._poll_lock.acquire(timeout=0.5):
+                    continue
+                try:
+                    if self.passthrough or self._passthrough_requested.is_set():
                         continue
                     self._poll_once()
+                finally:
+                    self._poll_lock.release()
+                spent = time.monotonic() - t0
+                self._sleep(max(0.05, self.poll_interval - spent))
             except Exception:
                 LOG.error("board manager 异常：\n%s", traceback.format_exc())
                 self._close_serial()
@@ -499,9 +508,7 @@ class BoardLink:
             err = resp.get("err") or "unknown"
             self._set_state("no_stats", "stats 返回错误：%s" % err)
 
-        # 固定节奏（含透传暂停后的恢复）
-        spent = time.monotonic() - start
-        self._sleep(max(0.05, self.poll_interval - spent))
+        # 节奏由 _manager 在锁外 sleep 控制（这里不能再睡，否则会拖住透传切换）
 
     def _sleep(self, seconds: float) -> None:
         self._stop.wait(max(0.0, seconds))
@@ -542,17 +549,29 @@ class BoardLink:
         link.write(data)
 
     def begin_passthrough(self, client: str) -> None:
-        # 先拿 poll 锁：保证此刻没有「已发命令、等响应」的 stats 轮询
-        with self._poll_lock:
-            with self._mode_lock:
-                self.passthrough = True
-                self.passthrough_client = client
-                self._mode = "passthrough"
-                self._pass_queue = queue.Queue()   # 丢弃切换前残留字节
-                self._linebuf.clear()
-            link = self._serial
-            if link is not None:
-                link.flush_input()
+        # 两步握手：先「举手」让 manager 不再发起新的 stats 轮询，再等它在途的那次往返
+        # 结束（最多 0.5 s 拿锁 + 0.9 s 等响应），然后切模式。旧版直接抢锁会被饿死。
+        self._passthrough_requested.set()
+        try:
+            if not self._poll_lock.acquire(timeout=3.0):
+                raise SerialError("板子 stats 轮询正忙，透传启动超时（3 s）")
+            try:
+                if self._serial is None or not self.serial_open:
+                    raise SerialError("串口未打开，无法进入透传")
+                with self._mode_lock:
+                    self.passthrough = True
+                    self.passthrough_client = client
+                    self._mode = "passthrough"
+                    self._pass_queue = queue.Queue()   # 丢弃切换前残留字节
+                    self._linebuf.clear()
+                link = self._serial
+                if link is not None:
+                    link.flush_input()
+            finally:
+                self._poll_lock.release()
+        except Exception:
+            self._passthrough_requested.clear()
+            raise
         LOG.info("TCP 透传开始：%s", client)
 
     def end_passthrough(self) -> None:
@@ -565,6 +584,7 @@ class BoardLink:
         link = self._serial
         if link is not None:
             link.flush_input()   # 丢掉客户端断开时留下的半截响应
+        self._passthrough_requested.clear()
         LOG.info("TCP 透传结束，恢复 stats 轮询")
 
 
@@ -579,15 +599,19 @@ class TcpBridge(threading.Thread):
         self.host = host
         self.port = port
         self._srv: socket.socket | None = None
-        self._stop = threading.Event()
+        # 注意：不能叫 _stop —— Thread 自己有个 _stop() 方法，会被 join() 调用；
+        # 用 Event 覆盖它会让 join() 抛 TypeError（selftest 踩过）。
+        self._stop_event = threading.Event()
         self.bound_port = 0
+        self._client_lock = threading.Lock()
+        self._active_client: str | None = None
 
     def run(self) -> None:
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             srv.bind((self.host, self.port))
-            srv.listen(2)
+            srv.listen(4)
         except OSError as exc:
             LOG.error("TCP 透传端口 %s:%s 绑定失败：%s（透传功能不可用，HTTP 继续）",
                       self.host, self.port, exc)
@@ -596,38 +620,62 @@ class TcpBridge(threading.Thread):
         self._srv = srv
         self.bound_port = srv.getsockname()[1]
         LOG.info("TCP 透传监听 %s:%d（一次一个客户端）", self.host, self.bound_port)
-        while not self._stop.is_set():
+        # accept 循环只负责接客：把连接交给独立线程，避免一个卡住的客户端把
+        # accept 占死、backlog 塞满、后续连接全部超时（旧版 bug）。
+        while not self._stop_event.is_set() and not STOP.is_set():
             try:
                 conn, addr = srv.accept()
             except OSError:
                 break
             client = "%s:%d" % (addr[0], addr[1])
-            if self.board.passthrough:
-                LOG.warning("已有透传客户端（%s），拒绝 %s", self.board.passthrough_client, client)
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+            with self._client_lock:
+                busy_client = self._active_client
+                if busy_client is None and self.board.serial_open:
+                    self._active_client = client
+            if busy_client is not None:
+                LOG.warning("已有透传客户端（%s），拒绝 %s", busy_client, client)
+                self._close_quietly(conn)
                 continue
             if not self.board.serial_open:
                 LOG.warning("串口未打开，拒绝透传客户端 %s", client)
-                try:
-                    conn.close()
-                except OSError:
-                    pass
+                self._close_quietly(conn)
                 continue
-            self._serve_client(conn, client)
+            threading.Thread(target=self._serve_connection, args=(conn, client),
+                             name="tcp-serve", daemon=True).start()
         try:
             srv.close()
         except OSError:
             pass
 
-    def _serve_client(self, conn: socket.socket, client: str) -> None:
-        self.board.begin_passthrough(client)
-        conn.setblocking(False)
+    @staticmethod
+    def _close_quietly(conn: socket.socket) -> None:
         try:
-            while not self._stop.is_set() and not STOP.is_set():
+            conn.close()
+        except OSError:
+            pass
+
+    def _serve_connection(self, conn: socket.socket, client: str) -> None:
+        """一条透传连接的完整生命周期：异常不逃逸，退出必清 active + 恢复轮询。"""
+        try:
+            self._serve_client(conn, client)
+        except Exception:
+            LOG.error("TCP 透传客户端 %s 异常：\n%s", client, traceback.format_exc())
+        finally:
+            self._close_quietly(conn)
+            with self._client_lock:
+                if self._active_client == client:
+                    self._active_client = None
+            LOG.info("TCP 透传客户端已断开：%s", client)
+
+    def _serve_client(self, conn: socket.socket, client: str) -> None:
+        begun = False
+        try:
+            self.board.begin_passthrough(client)
+            begun = True
+            conn.setblocking(False)
+            while not self._stop_event.is_set() and not STOP.is_set():
                 if not self.board.serial_open:
+                    LOG.warning("透传中串口断开，结束透传 %s", client)
                     break
                 try:
                     readable, _, _ = select.select([conn], [], [], 0.02)
@@ -658,14 +706,11 @@ class TcpBridge(threading.Thread):
                     except OSError:
                         return
         finally:
-            self.board.end_passthrough()
-            try:
-                conn.close()
-            except OSError:
-                pass
+            if begun:
+                self.board.end_passthrough()
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
         srv, self._srv = self._srv, None
         if srv is not None:
             try:
@@ -803,6 +848,24 @@ def _which(name: str) -> str | None:
     return None
 
 
+def _decode_console(data) -> str:
+    """解码 Windows 控制台子进程输出：PowerShell 有时给 UTF-8，有时给 GBK。
+
+    统一先按 UTF-8 严格解，失败再按 GBK 解，最后兜底 replace —— 绝不让一个
+    控制台重定向的编码问题把采样线程打挂（旧版 gbk 严格解码就崩过）。
+    """
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    for enc in ("utf-8", "gbk"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", "replace")
+
+
 class GpuSampler:
     GPU_QUERY = "name,utilization.gpu,temperature.gpu,memory.used,memory.total"
 
@@ -835,7 +898,7 @@ class GpuSampler:
         try:
             proc = subprocess.run(
                 [self._exe, "--query-gpu=" + self.GPU_QUERY, "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=5, creationflags=CREATE_NO_WINDOW)
+                capture_output=True, timeout=5, creationflags=CREATE_NO_WINDOW)
         except (OSError, subprocess.TimeoutExpired) as exc:
             LOG.debug("nvidia-smi failed: %s", exc)
             return self._last
@@ -843,7 +906,7 @@ class GpuSampler:
             LOG.debug("nvidia-smi rc=%s", proc.returncode)
             return self._last
         gpus: list[dict] = []
-        for line in proc.stdout.splitlines():
+        for line in _decode_console(proc.stdout).splitlines():
             parts = [p.strip() for p in line.strip().split(",")]
             if len(parts) < 5:
                 continue
@@ -895,8 +958,8 @@ class NpuProbe(threading.Thread):
         try:
             proc = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", NPU_PROBE_PS],
-                capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW)
-            lines = (proc.stdout or "").strip().splitlines()
+                capture_output=True, timeout=30, creationflags=CREATE_NO_WINDOW)
+            lines = _decode_console(proc.stdout).strip().splitlines()
             if lines:
                 self.name_ = lines[0].strip()
                 self.detected = bool(self.name_)
@@ -1327,8 +1390,8 @@ def lan_ips() -> list[str]:
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
              "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^127\\.' "
              "-and $_.PrefixOrigin -ne 'WellKnown' } | Select-Object -ExpandProperty IPAddress) -join ','"],
-            capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW)
-        for ip in (proc.stdout or "").strip().split(","):
+            capture_output=True, timeout=10, creationflags=CREATE_NO_WINDOW)
+        for ip in _decode_console(proc.stdout).strip().split(","):
             if ip.strip():
                 ips.append(ip.strip())
     except Exception:
@@ -1346,11 +1409,11 @@ def try_open_firewall(port: int) -> tuple[bool, str]:
     cmd = ["netsh", "advfirewall", "firewall", "add", "rule", "name=dsh-hub",
            "dir=in", "action=allow", "protocol=TCP", "localport=%d" % port]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+        proc = subprocess.run(cmd, capture_output=True, timeout=20,
                               creationflags=CREATE_NO_WINDOW)
     except Exception as exc:
         return False, "netsh 调用失败：%s" % exc
-    out = ((proc.stdout or "") + (proc.stderr or "")).strip().replace("\r", "")
+    out = (_decode_console(proc.stdout) + _decode_console(proc.stderr)).strip().replace("\r", "")
     return proc.returncode == 0, out
 
 
@@ -1414,10 +1477,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--quiet", action="store_true", help="不打印每个 HTTP 请求")
     args = parser.parse_args(argv)
 
-    # Windows 控制台常是 GBK；编码不了的字符降级替换，别让 banner 把服务搞崩
+    # Windows 控制台常是 GBK；编码不了的字符降级替换；同时强制行缓冲，
+    # 后台重定向到文件时日志不再攒 8 KB 才出现（排障用）。
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")
+            stream.reconfigure(errors="replace", line_buffering=True)
         except Exception:
             pass
 
