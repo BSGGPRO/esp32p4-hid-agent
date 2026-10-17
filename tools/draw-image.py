@@ -1,0 +1,619 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""tools/draw-image.py — 把一张图「画」进 Windows 画图（ESP32-P4 HID 鼠标）。
+
+它做什么
+--------
+输入任意图片（PNG/JPG/WebP/BMP/GIF/TIFF/ICO，SVG 先由 ingest-image 转 PNG），
+输出一串「笔画折线」，然后（可选）由板子的鼠标在画图里一笔一笔画出来。
+
+三种描线策略
+------------
+line    线稿/简笔画/卡通/logo/签名：阈值 -> 细化(skeleton) -> 追踪成折线 -> 简化
+sketch  照片/复杂图：高斯模糊 + Sobel 边缘 -> 细化 -> 追踪（铅笔速写风格，密度可调）
+grid    像素风/图标：按网格采样，暗格子点一个点（小图专用，别用在大图上）
+
+安全设计
+--------
+* 默认 **只规划不落笔**（--dry-run 是默认行为），必须显式 --draw 才会动鼠标；
+* --draw 时每笔开始前复核前台窗口必须是画图，否则立即停手；
+* --draw 不会移动/最大化画图窗口（复用 draw-rage 的检测，不改窗口）；
+* 用户抢鼠标（光标和预期差太远）会抬笔跳过该笔，记录事件；
+* 规划结果和预览图都落盘，可以先看预览再决定画不画。
+
+用法
+----
+  # 1) 只规划 + 出预览图（不动鼠标，最安全）
+  python tools/draw-image.py inbox\\cat.png --canvas 0,120,1000,1120 --mode line
+  # 2) 进画图（自动找画图窗口/画布），先看预览
+  python tools/draw-image.py inbox\\cat.png --mode line
+  # 3) 真画
+  python tools/draw-image.py inbox\\cat.png --mode line --draw
+  # 4) 照片转铅笔速写
+  python tools/draw-image.py inbox\\photo.jpg --mode sketch --edge 40 --draw
+
+输出：规划 JSON + 预览 PNG 写到 <workspace>\\inbox\\，并打印一行 JSON 摘要。
+退出码：0 成功；1 参数/文件问题；2 找不到画图/画布；3 规划为空；4 画的时候前台不是画图。
+"""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import math
+import os
+import sys
+import time
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+_PC = os.path.join(_ROOT, "pc")
+_WORKSPACE = os.path.dirname(_ROOT)
+INBOX = os.path.join(_WORKSPACE, "inbox")
+sys.path.insert(0, _PC)
+sys.path.insert(0, _HERE)
+
+import numpy as np  # noqa: E402
+from PIL import Image, ImageDraw, ImageFilter, ImageOps  # noqa: E402
+
+# 复用 draw-rage 的窗口/画布检测（文件名带连字符，用 importlib 加载）
+def _load_draw_rage():
+    path = os.path.join(_HERE, "draw-rage.py")
+    spec = importlib.util.spec_from_file_location("draw_rage", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+try:
+    dr = _load_draw_rage()
+except Exception as exc:  # noqa: BLE001
+    dr = None
+    _DR_ERR = exc
+else:
+    _DR_ERR = None
+
+
+# --------------------------------------------------------------------------- #
+# 图像 -> 笔画
+# --------------------------------------------------------------------------- #
+def load_rgb(path: str) -> Image.Image:
+    im = Image.open(path)
+    im = ImageOps.exif_transpose(im)
+    if im.mode in ("RGBA", "LA", "P"):
+        im = im.convert("RGBA")
+        bg = Image.new("RGB", im.size, (255, 255, 255))
+        bg.paste(im, mask=im.split()[-1])
+        return bg
+    return im.convert("RGB")
+
+
+def _gray_array(im: Image.Image, invert_auto: bool = True) -> np.ndarray:
+    g = np.asarray(im.convert("L"), dtype=np.float32)
+    if invert_auto and g.mean() < 115:      # 深底白线 -> 反色，统一成"暗=墨"
+        g = 255.0 - g
+    return g
+
+
+def thin_zhang_suen(mask: np.ndarray) -> np.ndarray:
+    """Zhang-Suen 细化：把粗线压成 1 px 骨架（numpy 向量化）。"""
+    img = mask.astype(np.int16).copy()
+    for _ in range(40):
+        before = int(img.sum())
+        for first in (True, False):
+            p = np.pad(img, 1)
+            P2, P3, P4 = p[:-2, 1:-1], p[:-2, 2:], p[1:-1, 2:]
+            P5, P6, P7 = p[2:, 2:], p[2:, 1:-1], p[2:, :-2]
+            P8, P9 = p[1:-1, :-2], p[:-2, :-2]
+            B = P2 + P3 + P4 + P5 + P6 + P7 + P8 + P9
+            seq = (P2, P3, P4, P5, P6, P7, P8, P9, P2)
+            A = sum(((seq[i] == 0) & (seq[i + 1] == 1)).astype(np.int16) for i in range(8))
+            if first:
+                cond = ((img == 1) & (B >= 2) & (B <= 6) & (A == 1)
+                        & ((P2 * P4 * P6) == 0) & ((P4 * P6 * P8) == 0))
+            else:
+                cond = ((img == 1) & (B >= 2) & (B <= 6) & (A == 1)
+                        & ((P2 * P4 * P8) == 0) & ((P2 * P6 * P8) == 0))
+            img[cond] = 0
+        if int(img.sum()) == before:
+            break
+    return img.astype(bool)
+
+
+def trace_skeleton(skel: np.ndarray) -> list[list[tuple[int, int]]]:
+    """把骨架追踪成折线。
+
+    8 连通骨架的斜线会出现"台阶"：一个像素同时有正交和对角邻居，度数=3，
+    按"度数!=2 就断"会把一条斜线切成一堆 2 px 碎片。所以这里用**方向连续性**
+    走法：每步在没走过的邻居里挑方向变化最小的（对角优先），走到无路可走为止；
+    交叉点（真分叉）会顺着继续走，另一条分支之后从剩余像素另起一笔。
+    """
+    H, W = skel.shape
+    ys, xs = np.nonzero(skel)
+    S = set(zip(xs.tolist(), ys.tolist()))
+    if not S:
+        return []
+    NB = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1) if dx or dy]
+    nbr: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for (x, y) in S:
+        nbr[(x, y)] = [(x + dx, y + dy) for dx, dy in NB if (x + dx, y + dy) in S]
+
+    visited: set[tuple[int, int]] = set()
+    out: list[list[tuple[int, int]]] = []
+
+    def step(cur, prev, d):
+        """从 cur 出发挑下一像素；d 是上一步方向（可能为 0,0）。"""
+        cands = [q for q in nbr[cur] if q not in visited]
+        if prev is not None and len(cands) > 1:
+            # 不要 180 度掉头（除非别无选择）
+            back = (prev[0] - cur[0], prev[1] - cur[1])
+            no_back = [q for q in cands if (q[0] - cur[0], q[1] - cur[1]) != back]
+            if no_back:
+                cands = no_back
+        if len(cands) > 1 and d != (0, 0):
+            def score(q):
+                vx, vy = q[0] - cur[0], q[1] - cur[1]
+                dot = vx * d[0] + vy * d[1]
+                diag = 1 if (vx and vy) else 0     # 台阶里优先走对角，线更直
+                same = 1 if (vx, vy) == d else 0
+                return (same, dot, diag)
+            cands.sort(key=score, reverse=True)
+        return cands[0] if cands else None
+
+    def walk(start, second=None):
+        path = [start]
+        visited.add(start)
+        cur = start
+        first = second if second is not None else step(start, None, (0, 0))
+        prev = start
+        d = (0, 0)
+        if first is not None:
+            d = (first[0] - start[0], first[1] - start[1])
+            path.append(first)
+            visited.add(first)
+            prev, cur = start, first
+        while True:
+            q = step(cur, prev, d)
+            if q is None:
+                break
+            path.append(q)
+            visited.add(q)
+            d = (q[0] - prev[0], q[1] - prev[1])
+            prev, cur = cur, q
+            if len(path) > 200000:
+                break
+        return path
+
+    # 先从未走过的端点起笔（保证长线完整），再从剩下像素起笔
+    seeds = [p for p in S if len(nbr[p]) == 1 and p not in visited]
+    seeds.sort(key=lambda p: (len(nbr[p]), p[1], p[0]))
+    for p in seeds:
+        if p in visited:
+            continue
+        seg = walk(p)
+        if len(seg) >= 2:
+            out.append(seg)
+    rest = [p for p in S if p not in visited]
+    rest.sort(key=lambda p: (len(nbr[p]), p[1], p[0]))
+    for p in rest:
+        if p in visited:
+            continue
+        seg = walk(p)
+        if len(seg) >= 2:
+            out.append(seg)
+    return out
+
+
+def rdp(points: list[tuple[float, float]], eps: float) -> list[tuple[float, float]]:
+    """Douglas-Peucker 简化（迭代版）。"""
+    if len(points) < 3 or eps <= 0:
+        return points
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b - a < 2:
+            continue
+        ax, ay = points[a]
+        bx, by = points[b]
+        dx, dy = bx - ax, by - ay
+        norm = math.hypot(dx, dy) or 1e-9
+        best_i, best_d = -1, -1.0
+        for i in range(a + 1, b):
+            px, py = points[i]
+            d = abs(dy * (px - ax) - dx * (py - ay)) / norm
+            if d > best_d:
+                best_i, best_d = i, d
+        if best_d > eps and best_i > 0:
+            keep[best_i] = True
+            stack.append((a, best_i))
+            stack.append((best_i, b))
+    return [p for i, p in enumerate(points) if keep[i]]
+
+
+def plan_line(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
+    scale = min(W / float(img.width), H / float(img.height))
+    nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
+    small = img.resize((nw, nh), Image.LANCZOS)
+    if args.mode == "sketch":
+        blur = small.filter(ImageFilter.GaussianBlur(args.blur))
+        g = np.asarray(blur.convert("L"), dtype=np.float32)
+        gy, gx = np.gradient(g)
+        mag = np.hypot(gx, gy)
+        mask = mag > float(args.edge)
+        src = "sobel(edge=%s, blur=%s)" % (args.edge, args.blur)
+    else:
+        g = _gray_array(small)
+        mask = g < float(args.thresh)
+        src = "threshold(%s)" % args.thresh
+    if args.dilate:
+        m2 = mask.copy()
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx or dy:
+                    m2 |= np.roll(np.roll(mask, dy, axis=0), dx, axis=1)
+        mask = m2
+    skel = thin_zhang_suen(mask)
+    raw = trace_skeleton(skel)
+    ox, oy = (W - nw) // 2, (H - nh) // 2
+    strokes = []
+    for line in raw:
+        if len(line) < args.min_len:
+            continue
+        simp = rdp([(float(x), float(y)) for x, y in line], args.simplify)
+        if len(simp) < 2:
+            continue
+        strokes.append([[x + ox, y + oy] for x, y in simp])
+    meta = {"mode": args.mode, "source": src, "image_scaled": [nw, nh],
+            "skeleton_px": int(skel.sum()), "polylines_raw": len(raw)}
+    return strokes, meta
+
+
+def plan_grid(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
+    cell = max(3, int(args.cell))
+    cols, rows = max(1, W // cell), max(1, H // cell)
+    # 先在原分辨率判「有没有墨」，再按格子统计墨占比（取平均会把细线抹掉）
+    sc = min(W / float(img.width), H / float(img.height))
+    nw, nh = max(2, int(img.width * sc)), max(2, int(img.height * sc))
+    small = img.resize((nw, nh), Image.LANCZOS)
+    mask = _gray_array(small) < float(args.thresh)
+    ox, oy = (W - cols * cell) // 2, (H - rows * cell) // 2
+    strokes = []
+    for r in range(rows):
+        y0 = oy + r * cell
+        ry0, ry1 = max(0, int(y0 / sc)), max(1, min(nh, int((y0 + cell) / sc)))
+        for c in range(cols):
+            x0 = ox + c * cell
+            rx0, rx1 = max(0, int(x0 / sc)), max(1, min(nw, int((x0 + cell) / sc)))
+            block = mask[ry0:ry1, rx0:rx1]
+            if block.size and (block.mean() >= 0.08 or block.sum() >= 2):
+                x = x0 + cell // 2
+                y = y0 + cell // 2
+                strokes.append([[float(x), float(y)], [float(x + 1), float(y)]])
+    return strokes, {"mode": "grid", "cell": cell, "grid": [cols, rows]}
+
+
+def plan(img: Image.Image, W: int, H: int, args):
+    if args.mode == "grid":
+        strokes, meta = plan_grid(img, W, H, args)
+    else:
+        strokes, meta = plan_line(img, W, H, args)
+    meta["strokes"] = len(strokes)
+    meta["vertices"] = sum(len(s) for s in strokes)
+    if args.max_strokes and len(strokes) > args.max_strokes:
+        strokes = sorted(strokes, key=len, reverse=True)[: args.max_strokes]
+        meta["truncated_to"] = args.max_strokes
+        meta["strokes"] = len(strokes)
+        meta["vertices"] = sum(len(s) for s in strokes)
+    return strokes, meta
+
+
+def _ink_map(im: Image.Image, side: int = 256) -> np.ndarray:
+    g = np.asarray(im.convert("L").resize((side, side), Image.BOX), dtype=np.float32)
+    if g.mean() < 115:
+        g = 255.0 - g
+    return (255.0 - g) / 255.0          # 0=纸，1=墨
+
+
+def compare_with_source(src: Image.Image, preview: Image.Image) -> dict:
+    """预览 vs 原图的数值相似度（不用眼睛也能判断像不像）。
+
+    pearson : 墨迹图的相关性（1=完全一致）
+    ink_iou : 二值墨迹交集/并集（对线条位置最敏感）
+    """
+    a = _ink_map(src)
+    b = _ink_map(preview)
+    a1, b1 = a.ravel(), b.ravel()
+    den = (a1.std() * b1.std())
+    pear = float(((a1 - a1.mean()) * (b1 - b1.mean())).mean() / den) if den > 1e-9 else 0.0
+    am, bm = a > 0.12, b > 0.12
+    inter = float((am & bm).sum())
+    union = float((am | bm).sum()) or 1.0
+    return {"pearson": round(pear, 4), "ink_iou": round(inter / union, 4),
+            "src_ink": round(float(am.mean()), 4), "preview_ink": round(float(bm.mean()), 4)}
+
+
+def render_preview(strokes, W: int, H: int, width: int = 2) -> Image.Image:
+    im = Image.new("RGB", (W, H), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    for s in strokes:
+        if len(s) >= 2:
+            d.line([(p[0], p[1]) for p in s], fill=(25, 25, 25), width=width, joint="curve")
+    return im
+
+
+# --------------------------------------------------------------------------- #
+# 执行：快速笔画器（开环 + 周期闭环校正）
+# --------------------------------------------------------------------------- #
+def _gain_table() -> list:
+    try:
+        from pointer_profile import get as _get
+        prof = _get()
+        if prof and prof.get("gain_table"):
+            return [(float(m), float(g)) for m, g in prof["gain_table"] if float(g) > 0]
+    except Exception:  # noqa: BLE001
+        pass
+    import brain
+    return list(brain._GAIN_TABLE)
+
+
+def _gain(m: float, table) -> float:
+    if m <= table[0][0]:
+        return table[0][1]
+    if m >= table[-1][0]:
+        return table[-1][1]
+    for i in range(len(table) - 1):
+        m0, g0 = table[i]
+        m1, g1 = table[i + 1]
+        if m0 <= m <= m1:
+            t = (m - m0) / (m1 - m0)
+            return g0 + (g1 - g0) * t
+    return table[-1][1]
+
+
+def counts_for(px: float, table) -> int:
+    """想要光标走 px 像素 -> 该发多少个 count（按实测增益反推）。"""
+    if px == 0:
+        return 0
+    sign = 1 if px > 0 else -1
+    a = abs(px)
+    m = a                                    # 起点：1:1
+    for _ in range(6):
+        g = _gain(m, table)
+        if g <= 0:
+            break
+        m = a / g
+        if m < 1:
+            m = 1.0
+            break
+    return sign * max(1, int(round(m)))
+
+
+def counts_vec(dx: float, dy: float, table) -> tuple[int, int]:
+    s = math.hypot(dx, dy)
+    if s < 1e-9:
+        return (0, 0)
+    m = counts_for(s, table)
+    k = m / s
+    cx, cy = int(round(dx * k)), int(round(dy * k))
+    if cx == 0 and cy == 0:
+        cx = 1 if dx > 0 else -1 if dx < 0 else 0
+    return (cx, cy)
+
+
+def run_strokes(b, strokes, args, table, paint_hwnd: int, log: list) -> dict:
+    res = {"strokes_done": 0, "interruptions": 0, "aborted": False, "ms": 0}
+    t0 = time.time()
+    for si, pts in enumerate(strokes):
+        if len(pts) < 2:
+            continue
+        if dr is not None and paint_hwnd and int(dr.foreground()) != int(paint_hwnd):
+            res["aborted"] = True
+            res["reason"] = "前台不再是画图窗口，已停手"
+            break
+        r = b.locate(int(round(pts[0][0])), int(round(pts[0][1])), tol=1)
+        if not r.get("ok"):
+            continue
+        b.bridge.mouse_btn("left", "down")
+        down = True
+        prev = pts[0]
+        sent = 0
+        try:
+            for p in pts[1:]:
+                dx, dy = p[0] - prev[0], p[1] - prev[1]
+                if abs(dx) + abs(dy) < 0.5:
+                    continue
+                b.bridge.mouse_move(*counts_vec(dx, dy, table))
+                prev = p
+                sent += 1
+                if args.anchor_every and sent % args.anchor_every == 0:
+                    from brain import cursor_pos
+                    ax, ay = cursor_pos()
+                    ex, ey = p[0] - ax, p[1] - ay
+                    if abs(ex) + abs(ey) > args.interfere_px:
+                        b.bridge.mouse_btn("left", "up")
+                        down = False
+                        res["interruptions"] += 1
+                        log.append({"stroke": si, "at": [round(p[0]), round(p[1])],
+                                    "err": [round(ex), round(ey)],
+                                    "event": "user_interference"})
+                        break
+                    if max(abs(ex), abs(ey)) > 1:
+                        b.bridge.mouse_move(*counts_vec(ex, ey, table))
+        finally:
+            if down:
+                b.bridge.mouse_btn("left", "up")
+        res["strokes_done"] += 1
+        if args.progress and si % args.progress == 0:
+            print("   ... %d/%d 笔" % (si + 1, len(strokes)), file=sys.stderr, flush=True)
+    res["ms"] = int((time.time() - t0) * 1000)
+    return res
+
+
+# --------------------------------------------------------------------------- #
+# 画布
+# --------------------------------------------------------------------------- #
+def parse_canvas(spec: str) -> list[int]:
+    s = spec.lower().replace(" ", "")
+    if "x" in s and "," not in s:
+        w, h = s.split("x", 1)
+        return [0, 0, int(w), int(h)]
+    parts = [int(float(v)) for v in s.split(",")]
+    if len(parts) != 4:
+        raise SystemExit("--canvas 要写 'x1,y1,x2,y2' 或 '宽x高'")
+    return parts
+
+
+def detect_canvas_auto() -> tuple[list[int], int, str]:
+    if dr is None:
+        raise SystemExit("检测画布需要 draw-rage.py: %r" % (_DR_ERR,))
+    import eyes
+    paint = dr.find_paint()
+    if not paint:
+        raise SystemExit("没找到画图窗口（第 2 步：先打开 mspaint）")
+    shot_path = os.path.join(INBOX, "canvas-%s.png" % time.strftime("%H%M%S"))
+    os.makedirs(INBOX, exist_ok=True)
+    shot = eyes.capture(shot_path)
+    img = Image.open(shot.path)
+    det = dr.detect_canvas(img, paint["rect"])
+    if not det.get("ok"):
+        raise SystemExit("画布检测失败: %s（窗口 %s）" % (det.get("reason"), paint["rect"]))
+    return det["box"], int(paint["hwnd"]), shot.path
+
+
+def ink_report(after_path: str, box, before_path: str | None) -> dict:
+    try:
+        img = Image.open(after_path)
+        st = dr.ink_stats(img, box)
+        out = {"canvas_ink": st}
+        if before_path and os.path.exists(before_path):
+            out["changed_px"] = dr.changed_pixels(before_path, after_path, box)
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return {"err": repr(exc)}
+
+
+# --------------------------------------------------------------------------- #
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="把图片画进画图（先预览，--draw 才落笔）")
+    ap.add_argument("image", help="图片路径（任意格式先跑 tools/ingest-image.py）")
+    ap.add_argument("--mode", default="line", choices=["line", "sketch", "grid"])
+    ap.add_argument("--canvas", default=None, help="'x1,y1,x2,y2' 或 '宽x高'；不给就检测画图窗口")
+    ap.add_argument("--margin", type=int, default=24, help="画布内边距 px")
+    ap.add_argument("--thresh", type=float, default=150, help="line/grid 阈值（暗=墨）")
+    ap.add_argument("--edge", type=float, default=45, help="sketch 的 Sobel 阈值")
+    ap.add_argument("--blur", type=float, default=1.2, help="sketch 模糊半径")
+    ap.add_argument("--cell", type=int, default=10, help="grid 的格子边长")
+    ap.add_argument("--min-len", type=int, default=6, help="丢弃短于该长度(px)的折线")
+    ap.add_argument("--simplify", type=float, default=1.2, help="RDP 简化容差 px")
+    ap.add_argument("--dilate", action="store_true", help="笔画偏细时先膨胀 1 px")
+    ap.add_argument("--max-strokes", type=int, default=0, help="最多保留多少笔（0=不限）")
+    ap.add_argument("--preview-width", type=int, default=2)
+    ap.add_argument("--draw", action="store_true", help="真的落笔（默认只规划）")
+    ap.add_argument("--anchor-every", type=int, default=8, help="每 N 个顶点做一次闭环校正")
+    ap.add_argument("--interfere-px", type=int, default=40, help="偏差超过它就判定用户抢鼠标")
+    ap.add_argument("--progress", type=int, default=0, help="每 N 笔打印进度（0=不打印）")
+    ap.add_argument("--transport", default="tcp", choices=["tcp", "uart"])
+    ap.add_argument("--out", default=None, help="预览/规划输出前缀")
+    ap.add_argument("--no-window-move", action="store_true", help="兼容参数：永不移动窗口（本工具本来就不移）")
+    a = ap.parse_args(argv)
+
+    if not os.path.exists(a.image):
+        print(json.dumps({"ok": False, "err": "图片不存在: %s" % a.image}, ensure_ascii=False))
+        return 1
+    os.makedirs(INBOX, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    base = a.out or os.path.join(INBOX, "plan-%s" % ts)
+
+    img = load_rgb(a.image)
+    canvas = None
+    paint_hwnd = 0
+    before_shot = None
+    if a.canvas:
+        box = parse_canvas(a.canvas)
+        box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
+        canvas = [box[2] - box[0], box[3] - box[1]]
+    elif a.draw:
+        box, paint_hwnd, before_shot = detect_canvas_auto()
+        box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
+        canvas = [box[2] - box[0], box[3] - box[1]]
+    else:
+        # 纯预览：默认 1000x1000 画布
+        canvas = [1000, 1000]
+        box = [0, 0, canvas[0], canvas[1]]
+
+    if canvas[0] < 50 or canvas[1] < 50:
+        print(json.dumps({"ok": False, "err": "画布太小", "canvas": canvas}, ensure_ascii=False))
+        return 2
+
+    t_plan = time.time()
+    strokes, meta = plan(img, canvas[0], canvas[1], a)
+    meta["plan_ms"] = int((time.time() - t_plan) * 1000)
+    if not strokes:
+        print(json.dumps({"ok": False, "err": "没规划出笔画（阈值太严？图太淡？）",
+                          "meta": meta}, ensure_ascii=False))
+        return 3
+
+    # 画布局部坐标（预览/比对用），窗口坐标（真画用）
+    strokes_canvas = strokes
+    strokes_win = [[[p[0] + box[0], p[1] + box[1]] for p in s] for s in strokes]
+
+    # 预览 + 计划落盘
+    prev = render_preview(strokes_canvas, canvas[0], canvas[1], a.preview_width)
+    prev_path = base + "-preview.png"
+    prev.save(prev_path, "PNG")
+    # 参考图：把原图按同样比例放进同样大小画布（用于数值比对）
+    sc = min(canvas[0] / float(img.width), canvas[1] / float(img.height))
+    rw, rh = max(2, int(img.width * sc)), max(2, int(img.height * sc))
+    ref = Image.new("RGB", (canvas[0], canvas[1]), (255, 255, 255))
+    ref.paste(img.resize((rw, rh), Image.LANCZOS),
+              ((canvas[0] - rw) // 2, (canvas[1] - rh) // 2))
+    similarity = compare_with_source(ref, prev)
+    plan_path = base + "-plan.json"
+    with open(plan_path, "w", encoding="utf-8") as f:
+        json.dump({"image": a.image, "mode": a.mode, "canvas_box": box,
+                   "meta": meta, "strokes": strokes_win}, f, ensure_ascii=False)
+
+    n_verts = sum(len(s) for s in strokes_win)
+    est_s = n_verts * 0.013 + len(strokes_win) * 0.06
+    summary = {"ok": True, "mode": a.mode, "canvas_box": box, "image": {"size": list(img.size)},
+               "meta": meta, "strokes": len(strokes_win), "vertices": n_verts,
+               "similarity": similarity,
+               "preview": prev_path, "plan": plan_path, "draw": bool(a.draw)}
+
+    if not a.draw:
+        summary["hint"] = "只规划没落笔。确认预览没问题后，加 --draw 真画。"
+        print(json.dumps(summary, ensure_ascii=False))
+        return 0
+
+    # ---- 真画 ----
+    from brain import Brain
+    if dr is not None and paint_hwnd:
+        if not dr.focus_hwnd(paint_hwnd):
+            print(json.dumps({"ok": False, "err": "切不到画图窗口", "canvas_box": box},
+                             ensure_ascii=False))
+            return 4
+    log: list = []
+    table = _gain_table()
+    with Brain(transport=a.transport) as b:
+        b.release()
+        res = run_strokes(b, strokes_win, a, table, paint_hwnd, log)
+        b.release()
+    summary["run"] = res
+    summary["events"] = log[:20]
+
+    # 画完留证据
+    try:
+        import eyes
+        after = eyes.capture(os.path.join(INBOX, "after-%s.png" % ts))
+        summary["after_shot"] = after.path
+        summary["ink"] = ink_report(after.path, box, before_shot)
+    except Exception as exc:  # noqa: BLE001
+        summary["ink"] = {"err": repr(exc)}
+    print(json.dumps(summary, ensure_ascii=False))
+    return 0 if not res.get("aborted") else 4
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>给 AI 传图 · P4 HID</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: #0e1116; color: #e6edf3; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         padding: 20px; }
+  .wrap { width: 100%; max-width: 560px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #9aa7b4; font-size: 14px; margin: 0 0 20px; }
+  .drop { border: 2px dashed #2f3b4a; border-radius: 16px; padding: 26px 18px; text-align: center;
+          background: #141a22; transition: border-color .15s, background .15s; }
+  .drop.hot { border-color: #3d8bfd; background: #16202c; }
+  .big { display: block; width: 100%; padding: 16px; border: 0; border-radius: 12px; font-size: 17px;
+         font-weight: 600; color: #fff; background: #2f6fdb; cursor: pointer; }
+  .big:active { background: #275fbe; }
+  .hint { color: #8b98a5; font-size: 13px; margin: 12px 0 0; }
+  input[type=file] { display: none; }
+  #list { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .item { background: #141a22; border: 1px solid #232e3c; border-radius: 12px; padding: 12px; }
+  .ok { color: #5fd07a; font-size: 14px; }
+  .bad { color: #ff7b72; font-size: 14px; }
+  .path { font: 12px/1.4 ui-monospace, Consolas, monospace; color: #9fb4cc; word-break: break-all;
+          margin-top: 6px; }
+  .bar { height: 6px; background: #1d2632; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+  .bar > i { display: block; height: 100%; width: 0; background: #3d8bfd; transition: width .15s; }
+  .foot { color: #6f7d8c; font-size: 12px; margin-top: 22px; }
+  a { color: #7fb2ff; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>给 AI 传一张图</h1>
+  <p class="sub">手机拍照 / 相册选图 / 电脑拖拽，传完把上面显示的路径发给我即可。</p>
+
+  <div class="drop" id="drop">
+    <button class="big" id="pick">选择照片 / 拍照</button>
+    <input type="file" id="file" accept="image/*" multiple>
+    <p class="hint">电脑上也可以直接把图片拖到这个框里</p>
+  </div>
+
+  <div id="list"></div>
+  <p class="foot">落盘目录：<span id="dir">inbox</span> · 支持 png / jpg / webp / bmp / gif / tiff / svg（HEIC 请先在手机上导出 JPG）</p>
+  <p class="foot"><a href="/">← 回板子仪表盘</a></p>
+</div>
+<script>
+(function () {
+  var drop = document.getElementById('drop');
+  var input = document.getElementById('file');
+  var pick = document.getElementById('pick');
+  var list = document.getElementById('list');
+  var dir = document.getElementById('dir');
+
+  fetch('/api/inbox').then(function (r) { return r.json(); }).then(function (j) {
+    if (j && j.dir) { dir.textContent = j.dir; }
+  }).catch(function () {});
+
+  function addItem(name) {
+    var d = document.createElement('div');
+    d.className = 'item';
+    d.innerHTML = '<div class="ok">已收到</div><div class="path"></div><div class="bar"><i></i></div>';
+    d.querySelector('.path').textContent = name;
+    list.insertBefore(d, list.firstChild);
+    return d;
+  }
+
+  function upload(file) {
+    var item = addItem(file.name + ' 上传中…');
+    var bar = item.querySelector('.bar > i');
+    var pathEl = item.querySelector('.path');
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload?name=' + encodeURIComponent(file.name));
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) { bar.style.width = Math.round(e.loaded / e.total * 100) + '%'; }
+      if (e.loaded === e.total) { item.querySelector('.ok').textContent = '解码落盘中…'; }
+    };
+    xhr.onload = function () {
+      var resp = {};
+      try { resp = JSON.parse(xhr.responseText); } catch (e) {}
+      if (xhr.status === 200 && resp.ok) {
+        item.querySelector('.ok').textContent = '已保存 · ' + Math.round(resp.bytes / 1024) + ' KB';
+        pathEl.textContent = resp.path;
+        bar.style.width = '100%';
+      } else {
+        item.querySelector('.ok').textContent = '失败';
+        item.querySelector('.bad') || null;
+        var b = document.createElement('div');
+        b.className = 'bad';
+        b.textContent = (resp.err || ('HTTP ' + xhr.status)) + (resp.detail ? ' · ' + resp.detail : '');
+        item.appendChild(b);
+        bar.style.width = '0';
+      }
+    };
+    xhr.onerror = function () {
+      item.querySelector('.ok').textContent = '失败';
+      var b = document.createElement('div');
+      b.className = 'bad';
+      b.textContent = '网络错误（手机和电脑要连同一个 Wi-Fi）';
+      item.appendChild(b);
+    };
+    xhr.send(file);
+  }
+
+  function handleFiles(files) {
+    for (var i = 0; i < files.length; i++) { upload(files[i]); }
+  }
+
+  pick.addEventListener('click', function () { input.click(); });
+  input.addEventListener('change', function () { handleFiles(input.files); input.value = ''; });
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('hot'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('hot'); });
+  });
+  drop.addEventListener('drop', function (e) {
+    if (e.dataTransfer && e.dataTransfer.files) { handleFiles(e.dataTransfer.files); }
+  });
+})();
+</script>
+</body>
+</html>

@@ -256,6 +256,9 @@ TF 卡卡片下方有一张「动态调频（DFS）」卡片，数据来自 `sta
 |---|---|
 | `GET /api/health` | `{"ok":true,"board":{state,serial_open,passthrough,...},"pc_ready":bool,"tcp_passthrough_port":N}` |
 | `GET /api/shutdown` | 仅 127.0.0.1/::1；返回 `{"ok":true,"bye":true}` 后进程优雅退出 |
+| `GET /api/inbox` | 列出上传目录最近 20 个文件（`name/bytes/mtime`）+ `dir/count` |
+| `GET /upload` | 手机/电脑上传页（`web/upload.html`） |
+| `POST /api/upload?name=x.png` | 原始字节上传到 `<workspace>\inbox\`，见 5.6 |
 | `OPTIONS *` | 204 + CORS 头（`Access-Control-Allow-Origin: *`），便于外部工具调试 |
 | 其它 GET | 静态文件（`web/` 目录，路径穿越已防护），未知路径 404 JSON |
 
@@ -294,6 +297,28 @@ Content-Type: application/json
 
 板子离线/被透传占用时返回 `{"ok":false,"err":"board_offline"|"passthrough_active"|"board_busy"}`，
 页面据此回滚开关并提示，不会假装成功。
+
+### 5.6 `POST /api/upload`（手机传图给 AI）
+
+给「用户发图片让 AI 画」用的入口，2026-10-18 新增，**不改固件、不影响串口**：
+
+```
+POST /api/upload?name=photo.jpg
+Content-Type: application/octet-stream
+<文件原始字节>
+```
+
+| 项 | 规则 |
+|---|---|
+| 落盘 | `<workspace>\inbox\upload-<时间戳>-<安全文件名>` |
+| 扩展名白名单 | `.png .jpg .jpeg .webp .bmp .gif .tif .tiff .heic .heif .svg .avif .ico .jfif` |
+| 大小上限 | 30 MB（超了 413 `too_large`） |
+| 文件名 | 只取 basename、非法字符替换成 `_`、截断 64 字符（防路径穿越） |
+| 成功响应 | `{"ok":true,"path":"...","bytes":N,"name":"..."}` |
+
+页面 `web/upload.html`（`GET /upload`）就是调这个接口：手机拍照/相册多选、电脑拖拽、
+带上传进度条，成功后把落盘**绝对路径**显示出来——把那一行发给 AI，它就能
+`python tools\ingest-image.py <路径>` 接着画。
 
 ---
 
@@ -397,7 +422,8 @@ Content-Type: application/json
 | `web/index.html` | 页面骨架（板子面板 + 本机面板），文件名固定，相对路径引用 `app.js`/`style.css` |
 | `web/app.js` | 轮询、渲染、canvas 仪表/曲线、超时与离线态（纯原生 JS，无构建） |
 | `web/style.css` | 暗色主题、手机竖屏自适应（媒体查询/流式布局） |
-| `pc/hub.py` | HTTP + 静态页 + 板子串口采集 + 本机采集 + TCP 透传（标准库，零第三方依赖） |
+| `web/upload.html` | 手机/电脑传图页（拍照、多选、拖拽、进度条、显示落盘路径） |
+| `pc/hub.py` | HTTP + 静态页 + 板子串口采集 + 本机采集 + TCP 透传 + 上传（标准库，零第三方依赖） |
 | `pc/transport_uart.py` | 复用其 DCB/COMMTIMEOUTS 结构与端口名规范化（hub 自己管常驻句柄） |
 | `tools/board_lock.py` | 串口跨进程互斥锁（hub 进程级持有） |
 | `docs/evidence/web-selftest.py` | 自检脚本（`web-*` 证据命名） |

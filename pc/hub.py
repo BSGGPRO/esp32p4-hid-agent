@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import queue
+import re
 import select
 import socket
 import subprocess
@@ -44,6 +45,7 @@ import sys
 import threading
 import time
 import traceback
+from urllib.parse import parse_qs, unquote, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ---------------------------------------------------------------------------
@@ -53,6 +55,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 TOOLS_DIR = os.path.join(_ROOT, "tools")
 WEB_ROOT = os.path.join(_ROOT, "web")
+# 手机/浏览器上传图片的落盘目录（工作区的 inbox，供 AI 侧 ingest-image 读取）
+INBOX_DIR = os.path.join(os.path.dirname(_ROOT), "inbox")
+UPLOAD_MAX_BYTES = 30 * 1024 * 1024
+UPLOAD_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff",
+               ".heic", ".heif", ".svg", ".avif", ".ico", ".jfif"}
 
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
@@ -1323,6 +1330,10 @@ class HubHandler(BaseHTTPRequestHandler):
                 self._handle_health()
             elif path in ("/api/shutdown", "/api/shutdown/"):
                 self._handle_shutdown()
+            elif path in ("/api/inbox", "/api/inbox/"):
+                self._handle_inbox()
+            elif path in ("/upload", "/upload/"):
+                self._serve_static("/upload.html")
             else:
                 self._serve_static(path)
         except BrokenPipeError:
@@ -1339,6 +1350,9 @@ class HubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
+        if path in ("/api/upload", "/api/upload/"):
+            self._handle_upload()
+            return
         if path not in ("/api/cmd", "/api/cmd/"):
             self._send_json(404, {"ok": False, "err": "not_found", "path": path})
             return
@@ -1390,6 +1404,56 @@ class HubHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"ok": False, "err": "internal", "detail": str(exc)})
             return
         self._send_json(200, resp)
+
+    # -- 手机/浏览器上传图片：POST /api/upload?name=xxx.png -----------------
+    def _handle_upload(self) -> None:
+        q = parse_qs(urlparse(self.path).query)
+        raw_name = unquote((q.get("name") or ["upload.bin"])[0])
+        name = os.path.basename(raw_name.replace("\x00", "")).strip() or "upload.bin"
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in UPLOAD_EXTS:
+            self._send_json(400, {"ok": False, "err": "unsupported_ext", "ext": ext,
+                                  "allowed": sorted(UPLOAD_EXTS)})
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0:
+            self._send_json(400, {"ok": False, "err": "empty_body"})
+            return
+        if length > UPLOAD_MAX_BYTES:
+            self._send_json(413, {"ok": False, "err": "too_large",
+                                  "max": UPLOAD_MAX_BYTES, "got": length})
+            return
+        raw = self.rfile.read(length)
+        os.makedirs(INBOX_DIR, exist_ok=True)
+        safe = re.sub(r"[^0-9A-Za-z._-]", "_", name)[:64]
+        out = os.path.join(INBOX_DIR, "upload-%s-%s"
+                           % (time.strftime("%Y%m%d-%H%M%S"), safe))
+        try:
+            with open(out, "wb") as f:
+                f.write(raw)
+        except OSError as exc:
+            self._send_json(500, {"ok": False, "err": "write_failed", "detail": str(exc)})
+            return
+        LOG.info("上传收到: %s (%d B)", out, len(raw))
+        self._send_json(200, {"ok": True, "path": out, "bytes": len(raw), "name": safe})
+
+    def _handle_inbox(self) -> None:
+        items = []
+        try:
+            for fn in os.listdir(INBOX_DIR):
+                fp = os.path.join(INBOX_DIR, fn)
+                if os.path.isfile(fp):
+                    st = os.stat(fp)
+                    items.append({"name": fn, "bytes": st.st_size,
+                                  "mtime": int(st.st_mtime)})
+        except OSError:
+            items = []
+        items.sort(key=lambda x: x["mtime"], reverse=True)
+        self._send_json(200, {"ok": True, "dir": INBOX_DIR, "count": len(items),
+                              "latest": items[:20]})
 
     def _handle_health(self) -> None:
         board = HubHandler.board

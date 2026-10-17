@@ -45,6 +45,29 @@
 
 ---
 
+## 图片 → 画出来（2026-10-18 新增）
+
+把任意格式的图变成板子能画的笔画，在画图里一笔一笔画出来（**不需要模型有视觉能力**，
+图片→笔画是确定性算法，像不像用数值指标自检）：
+
+```powershell
+# 1) 收图：剪贴板 / 任意格式文件 / 手机上传（http://<PC-IP>:8765/upload 拍照或选图）
+python tools\ingest-image.py --clipboard
+python tools\ingest-image.py "D:\pic\cat.heic" --thumb 1200
+
+# 2) 规划（默认不碰鼠标）：line 线稿 / sketch 照片速写 / grid 像素图标
+python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4
+#    -> inbox\plan-*-preview.png 预览 + strokes/vertices/est_seconds/similarity
+
+# 3) 真画（先打开画图，别最大化；会逐笔闭环、用户抢鼠标会抬笔跳过）
+python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4 --draw
+```
+
+实测：猫线稿 26 笔 / 193 顶点 / 约 4 秒，`pearson 0.92` / `ink_iou 0.75`；
+照片速写 42 笔 / 492 顶点 / 约 7 秒。细节见 [`docs/image-to-draw.md`](docs/image-to-draw.md)。
+
+---
+
 ## 快速开始（一条命令，两个口都插好后）
 
 ```powershell
