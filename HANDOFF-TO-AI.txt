@@ -1,0 +1,170 @@
+================================================================================
+ ESP32-P4 板子操控交接（单文件版）
+ —— 把本文件全文复制给另一个 AI，它就能操控这块板子的「键盘 + 鼠标」
+ 生成：2026-10-18   固件 v1.2.0 / 协议 proto 1.2
+================================================================================
+
+一、你现在有什么
+----------------
+一块真实的 ESP32-P4 开发板插在这台 Windows 上，通过 USB 伪装成「键盘 + 鼠标」
+（VID_303A PID_4004）。所以你有一双电子手：能截屏、移动光标、点击、拖拽、打字。
+你要是能看图，就能照着截图自己画。
+
+二、三条硬前提（不满足一定失败）
+--------------------------------
+1. 你必须能在这台 Windows 上执行命令（本地 shell / 终端工具）。
+   没有这个能力就直说，不要编造"我画好了"。
+2. hub 必须在跑（它占着串口，并提供 TCP 透传）。
+3. 所有命令一律加 --transport tcp。不要直连 COM7（会报端口被占用/board_busy）。
+
+三、环境路径（照抄，别改）
+--------------------------
+仓库
+  %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+Python（唯一的解释器，别用系统 python）
+  %USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
+hub 网页/接口
+  http://127.0.0.1:8765      （手机/局域网：http://192.168.1.221:8765）
+TCP 透传（brain.py --transport tcp 就连这里）
+  127.0.0.1:8766
+板子
+  JC-ESP32P4-M3-DEV，固件 v1.2.0 / proto 1.2，串口 COM7 @115200（别直连）
+屏幕
+  2560x1440（125% 缩放，进程需 DPI 感知；用 brain.py/eyes.py 已内置）
+
+四、第一步：自检 5 条命令（粘贴到 cmd 窗口，逐条看结果）
+--------------------------------------------------------
+cd /d %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+set PY=%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
+
+:: 1) 板子活着 + 屏幕/光标
+%PY% pc\brain.py --transport tcp --json info
+:: 2) 截屏（生成 pc\shot.png，2560x1440）—— 能看图的你从这里"睁眼"
+%PY% pc\brain.py --transport tcp --json look
+:: 3) 列窗口（找"画图"或目标窗口）
+%PY% pc\brain.py --transport tcp --json wins
+:: 4) 把光标移到绝对坐标（闭环，误差约 1 px）
+%PY% pc\brain.py --transport tcp --json point 640 360
+:: 5) 再确认一次状态
+%PY% pc\brain.py --transport tcp --json info
+
+成功标志：JSON 里 "ok": true，"port": "COM7"，info 里有 screen/cursor 字段，
+look 返回 shot 路径（截图文件存在且约 1 MB）。
+
+失败对照：
+  WinError 5 / 端口被占用      -> 忘了 --transport tcp
+  board_busy / 板子锁被占用    -> 有别的进程占着串口，等最多 1 分钟（看门狗会恢复）
+  argparse: unrecognized --json -> --json 必须放在子命令前面
+                                  正确: brain.py --transport tcp --json info
+                                  错误: brain.py --transport tcp info --json
+
+五、动作接口（pc\brain.py 子命令）
+----------------------------------
+look                        截屏 + 光标/前台窗口/窗口列表
+point X Y [--tol 2]         绝对定位，闭环收敛
+locate X Y [--tol 1]        绝对定位，1px 容差 + 抗用户打断
+move DX DY                  相对移动（DY 正 = 向下）
+click [X Y] [--button left|right|middle] [--count N]
+drag X1 Y1 X2 Y2            定位->按下->定位->抬起（中间无线）
+drag-path "X1,Y1;X2,Y2;..." 一次按下-连续移动-抬起（画线条用这个）
+scroll AMOUNT               滚轮，正 = 向上
+type "text" [--cps 40]      逐字符打字（仅 ASCII 0x20-0x7E，中文打不出来）
+key ctrl+s                  组合键
+tap enter                   单击一个键
+wins                        可见窗口列表（含 rect/前台/最小化）
+focus "画图"                按标题子串切到前台
+read-text                   用 ctrl+a / ctrl+c 读前台窗口文字
+clip get | clip set "..."   读写剪贴板
+info                        板子状态 + 屏幕 + 光标
+
+注意：--json 是全局参数，要写在子命令前面。
+
+六、批量脚本（画画强烈推荐：一次连接跑完，比逐条快约 10 倍）
+------------------------------------------------------------
+%PY% pc\brain.py --transport tcp run --script plan.json
+
+plan.json 示例（画一个 200x200 方框并验证）：
+[
+  {"op":"launch","cmd":"mspaint"},
+  {"op":"sleep","ms":1200},
+  {"op":"focus","title":"画图"},
+  {"op":"look","path":"before.png"},
+  {"op":"drag_path","button":"left",
+   "points":[[300,300],[500,300],[500,500],[300,500],[300,300]]},
+  {"op":"look","path":"after.png"},
+  {"op":"diff","a":"before.png","b":"after.png"}
+]
+
+可用 op：look / point / locate / move / click / drag / drag_path / scroll / type /
+key / tap / hold / release / sleep / wins / focus / launch / clip_get / clip_set /
+read_text / diff / wait_change / info / stop
+常用参数：points=[[x,y],...]  button=left|right|middle  cps=打字速度
+某步失败默认中止，加 --keep-going 继续。
+
+七、画图的标准流程（照做，别自由发挥）
+--------------------------------------
+1) look 截图 -> 你自己看图，量出画布矩形（窗口别最大化）
+2) wins 找"画图" -> focus "画图"（不要改窗口大小/位置）
+3) 在截图上规划折线：每一笔是一串点。圆形/弧线就多打点（间距 4-8 px）
+4) 写成 plan.json -> run --script plan.json 执行
+5) 再 look 一次 -> 自己看图检查；必要时 diff 做像素差分
+6) 汇报：画了几笔、耗时、误差、哪里不理想
+参考实现（复杂图、窗口检测、防遮挡、线宽自适应）：
+  tools\draw-rage.py --detect   只检测不动笔
+  tools\draw-rage.py --plan     只打印笔画坐标
+  tools\draw-rage.py --mock     离屏验证几何
+
+八、精度与换设备标定
+--------------------
+- 相对鼠标 + GetCursorPos 闭环，落点误差实测约 1 px（2560x1440 @125%）。
+- 不要自己算"发多少步能到目标"（Windows 指针加速非线性），直接 point/locate。
+- 换到别的电脑/分辨率，先跑一次（约 10 秒，会短暂占用鼠标）：
+    %PY% tools\home-calibrate.py --transport tcp --apply
+  它会用"撞屏幕四边"的方式（CNC 四角归零）量出屏幕尺寸和位移增益并存档，
+  之后那台设备自动生效（档案路径 C:\ProgramData\dsh\pointer-profile.json）。
+
+九、红线（违反会直接干扰用户，务必遵守）
+----------------------------------------
+1. 只在用户明确要求时操作键鼠，不要"顺手"点一下或打字。
+2. 绝对不要往聊天窗口打字（历史事故：把字母打进了用户正在用的窗口）。
+3. 不最大化、不移动、不缩放用户的画图窗口和聊天窗口。
+4. 不点未知按钮、不关窗口、不改系统设置（不碰注册表）。
+5. 命令前后要确保没有按住的键（brain.py 默认会自动 release_all）。
+6. 一次只跑一个客户端（透传是独占的），不要并发。
+7. 板子报 board_busy / 超时就停手报告，不要反复重试烧串口。
+
+十、常见坑
+----------
+截图是 2048x1152 而不是 2560x1440    进程没开 DPI 感知 -> 用 brain.py / eyes.py
+移动"少走/多走"                      指针加速 -> 用闭环 point/locate，别开环算步数
+透传期间网页数字不动                正常：透传独占串口，hub 暂停轮询，断开后恢复（<=1s）
+type 打不出中文                     协议只支持 ASCII 0x20-0x7E
+画出来的线断断续续                   用 drag-path（一次按下连续移动），别用 drag
+
+十一、更多资料（都在同一个仓库里，需要时再读）
+----------------------------------------------
+docs\agent-handoff.md        交接全文（最详细）
+docs\pointer-calibration.md  指针精度/四角归零/换设备适配
+docs\brain-usage.md          动作层详解与更多示例
+docs\protocol.md             串口 JSON 协议（帧格式/命令/错误码）
+docs\web-dashboard.md        hub/网页/接口/TCP 透传/部署
+docs\hardware-facts.md       板子硬件事实（引脚/TF 卡/USB/电源）
+docs\capabilities.json       机器可读能力清单
+
+十二、接上之后先回这一句
+------------------------
+"自检 5 条结果：info ok=true（屏幕 2560x1440，光标 x,y），look 生成了
+pc\shot.png，wins 找到 N 个窗口。已接上，等你给画画任务。"
+
+十三、附：只读 HTTP 接口（查状态用，不能用来画画）
+--------------------------------------------------
+GET http://127.0.0.1:8765/api/board    板子状态：CPU/内存/TF卡/温度/UART/PM
+GET http://127.0.0.1:8765/api/health   hub/板子/透传是否正常
+GET http://127.0.0.1:8765/api/pc       本机状态（页面已不用，接口保留）
+POST /api/cmd                          白名单命令；其中 mouse_move 被安全限制为
+                                       只能发 dx=dy=0，无法用于绘图
+说明：想真正操作桌面（画画），必须本地跑命令走 --transport tcp。
+
+================================================================================
+ END —— 现在从「四、自检 5 条命令」开始，把结果报给用户。
+================================================================================
