@@ -161,7 +161,7 @@ cd /d %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-age
 | 文件 | 内容 |
 |---|---|
 | `docs/agent-handoff.md` | 本文（交接说明） |
-| `docs/PASTE-TO-AI.md` | 可直接粘贴给另一个 AI 的提示词 |
+| `HANDOFF-TO-AI.txt`（仓库根） | **全量单文件版**：一个文件包含交接/接口/画图流程/协议速查/板子事实/排障，直接发给另一个 AI |
 | `docs/protocol.md` | 串口 JSON 协议（帧格式/命令/错误码/安全语义） |
 | `docs/brain-usage.md` | brain.py 动作层详解与示例脚本 |
 | `docs/pointer-calibration.md` | 指针精度、四角归零、换设备适配、绝对坐标 HID 路线 |

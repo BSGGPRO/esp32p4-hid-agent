@@ -1,46 +1,77 @@
 ================================================================================
- ESP32-P4 板子操控交接（单文件版）
- —— 把本文件全文复制给另一个 AI，它就能操控这块板子的「键盘 + 鼠标」
- 生成：2026-10-18   固件 v1.2.0 / 协议 proto 1.2
+ ESP32-P4 板子操控交接 · 全量单文件版（ALL-IN-ONE）
+ —— 把整个文件发给另一个 AI，它就能用这块板子的「键盘 + 鼠标」截屏、移动、点击、
+    拖拽、打字、画画；本文件同时包含板子/固件/网页/协议/环境/排障的全部关键事实。
+ 生成：2026-10-18 01:2x     固件 v1.2.0 / 协议 proto 1.2     仓库 esp32p4-hid-agent
 ================================================================================
 
-★ 重要前提（先读，别跳过）
-  这块板子的固件和网页都已经完整自检通过：固件 v1.2.0 的功能、稳定性、动态调频
-  开关都实机验证过，没有已知问题；网页在 6 种视口 + 70 项自检里全部通过，也没有已知问题。
-  所以你接手时它们是「成品」，不是「待修的半成品」。
-  ★ 别动固件代码：不要改 firmware\ 下任何文件，不要重新编译、不要烧录/刷机，
-    也不要改网页代码。你的任务是「用它」——截屏、移鼠标、点击、拖拽、画画。
+★ 给接手 AI 的确认（用户要求强调一遍）
+  这块板子的固件和网页都**没有已知问题**，已经完整自检通过：
+    · 固件 v1.2.0：HID 键鼠、动态调频开关（实测 360 ↔ 83 MHz）、TF 卡读写、
+      温度/任务/内存统计、安全释放——全部实机验证；连续在线 30+ 分钟无重启、无异常。
+    · 网页仪表盘：6 种视口布局 + 70 项自检全过，真实点击功能测试通过，无控制台报错。
+  所以你是接手一个「成品」，不是来修 bug 的。
+  ★ 别动固件代码：不要改 firmware\ 下任何文件、不要重新编译、不要烧录/刷机；
+    也不要改 web\ 网页代码。你要做的就是「用它」：截屏、移鼠标、点击、拖拽、画画。
+    真要报问题，只说「现象 + 复现步骤」，不要自己上手改。
 
-一、你现在有什么
-----------------
-一块真实的 ESP32-P4 开发板插在这台 Windows 上，通过 USB 伪装成「键盘 + 鼠标」
-（VID_303A PID_4004）。所以你有一双电子手：能截屏、移动光标、点击、拖拽、打字。
-你要是能看图，就能照着截图自己画。
+★ 本文件导航
+   想马上动手      -> 第三部分（自检 5 条命令）+ 第四部分（动作接口）+ 第六部分（画图流程）
+   想搞懂原理      -> 第一部分（架构）、第七部分（精度）、第十一部分（协议）
+   遇到问题        -> 第九部分（排障）
+   只想要状态信息  -> 第十二部分（HTTP 只读接口）
+   完整文档在哪    -> 第十三部分（文档索引）
 
-二、三条硬前提（不满足一定失败）
---------------------------------
-1. 你必须能在这台 Windows 上执行命令（本地 shell / 终端工具）。
-   没有这个能力就直说，不要编造"我画好了"。
-2. hub 必须在跑（它占着串口，并提供 TCP 透传）。
-3. 所有命令一律加 --transport tcp。不要直连 COM7（会报端口被占用/board_busy）。
+================================================================================
+ 第一部分 · 这是什么
+================================================================================
+一块真实的 ESP32-P4 开发板（JC-ESP32P4-M3-DEV，16 MB Flash / 32 MB PSRAM）插在这台
+Windows 上，通过 USB 枚举成「键盘 + 鼠标」复合 HID 设备（VID 0x303A / PID 0x4004），
+所以它等于一双电子手。
 
-三、环境路径（照抄，别改）
---------------------------
+数据通路（单向示意）：
+  AI/脚本  ->  pc/brain.py（动作层）
+          ->  TCP 127.0.0.1:8766（hub 的串口透传）
+          ->  hub（pc/hub.py，常驻，独占 COM7，同时跑网页 8765）
+          ->  板子 UART0 / CH340 COM7 @115200，一行一个 JSON
+          ->  板子固件执行 -> USB HID 报文 -> 这台 Windows 的光标/键盘
+  反馈：GetCursorPos() / 截屏（pc/eyes.py）闭环，所以能精确到像素级落点。
+
+三块组成：
+  firmware/   ESP-IDF 固件（v1.2.0），USB HID 键盘鼠标 + UART JSON 协议 + TF 卡/温度/PM
+  pc/         PC 侧：hub（网页+串口）、brain（动作层/闭环定位）、eyes（截屏）、verify（差分）
+  web/        网页仪表盘（只读板子状态 + DFS 开关），由 hub 在 8765 提供
+  tools/      标定、绘图、板子锁、自检等工具
+  docs/       协议/硬件/网页/指针标定等文档（本文件末尾有索引）
+
+================================================================================
+ 第二部分 · 三条硬前提（不满足一定失败）
+================================================================================
+1. 你必须能在这台 Windows 上执行命令（本地 shell / 终端工具）。没有这个能力就直说，
+   不要编造"我画好了"。
+2. hub 必须在跑（它占着 COM7，并提供 TCP 透传与网页）。检查：
+   curl http://127.0.0.1:8765/api/health  ->  "ok": true, "state": "online"
+3. 所有板子操作一律加 --transport tcp。不要直连 COM7（会报端口被占用 / board_busy）。
+
+================================================================================
+ 第三部分 · 环境路径（照抄，别改）
+================================================================================
 仓库
   %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
-Python（唯一的解释器，别用系统 python）
+Python（唯一解释器，别用 PATH 上的 python，那是商店占位符）
   %USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
-hub 网页/接口
-  http://127.0.0.1:8765      （手机/局域网：http://192.168.1.221:8765）
-TCP 透传（brain.py --transport tcp 就连这里）
+hub 网页 / 接口
+  http://127.0.0.1:8765          （局域网/手机：http://192.168.1.221:8765）
+TCP 透传（brain.py --transport tcp 连这里）
   127.0.0.1:8766
 板子
-  JC-ESP32P4-M3-DEV，固件 v1.2.0 / proto 1.2，串口 COM7 @115200（别直连）
-屏幕
-  2560x1440（125% 缩放，进程需 DPI 感知；用 brain.py/eyes.py 已内置）
+  JC-ESP32P4-M3-DEV，固件 v1.2.0 / proto v1.2，串口 COM7 @115200 8N1
+本机屏幕
+  2560x1440，125% 缩放（必须 DPI 感知；brain.py / eyes.py 已内置）
 
-四、第一步：自检 5 条命令（粘贴到 cmd 窗口，逐条看结果）
---------------------------------------------------------
+================================================================================
+ 第四部分 · 第一步：自检 5 条命令（粘贴到 cmd，逐条看结果）
+================================================================================
 cd /d %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
 set PY=%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
 
@@ -48,49 +79,58 @@ set PY=%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\p
 %PY% pc\brain.py --transport tcp --json info
 :: 2) 截屏（生成 pc\shot.png，2560x1440）—— 能看图的你从这里"睁眼"
 %PY% pc\brain.py --transport tcp --json look
-:: 3) 列窗口（找"画图"或目标窗口）
+:: 3) 列窗口（找"画图"或目标窗口，含 rect/前台/最小化）
 %PY% pc\brain.py --transport tcp --json wins
 :: 4) 把光标移到绝对坐标（闭环，误差约 1 px）
 %PY% pc\brain.py --transport tcp --json point 640 360
-:: 5) 再确认一次状态
+:: 5) 再确认状态（确保没有按住的键）
 %PY% pc\brain.py --transport tcp --json info
 
-成功标志：JSON 里 "ok": true，"port": "COM7"，info 里有 screen/cursor 字段，
-look 返回 shot 路径（截图文件存在且约 1 MB）。
+成功标志
+  · 每条 JSON 里 "ok": true；info 里有 "port": "COM7"、"screen": [2560,1440]、"cursor": [x,y]
+  · look 返回 "shot" 路径，文件存在（约 1 MB，2560x1440）
+  · wins 返回窗口数组，能看到 "画图" 之类标题
 
-失败对照：
-  WinError 5 / 端口被占用      -> 忘了 --transport tcp
-  board_busy / 板子锁被占用    -> 有别的进程占着串口，等最多 1 分钟（看门狗会恢复）
-  argparse: unrecognized --json -> --json 必须放在子命令前面
-                                  正确: brain.py --transport tcp --json info
-                                  错误: brain.py --transport tcp info --json
+失败对照
+  WinError 5 / 端口被占用        -> 忘了 --transport tcp
+  board_busy / 板子锁被占用      -> 有别的进程占用串口；等最多 1 分钟（看门狗会恢复）
+  tcp 连接被拒                   -> hub 没在跑；检查 http://127.0.0.1:8765/api/health
+  argparse: unrecognized --json  -> --json 是全局参数，必须放在子命令前面：
+                                    正确: brain.py --transport tcp --json info
+                                    错误: brain.py --transport tcp info --json
 
-五、动作接口（pc\brain.py 子命令）
-----------------------------------
-look                        截屏 + 光标/前台窗口/窗口列表
+================================================================================
+ 第五部分 · 动作接口（pc\brain.py 子命令 / run 的 op）
+================================================================================
+look                        截屏 + 光标/前台窗口/窗口列表；写 pc\shot.png（可 --region x,y,w,h）
 point X Y [--tol 2]         绝对定位，闭环收敛
-locate X Y [--tol 1]        绝对定位，1px 容差 + 抗用户打断
+locate X Y [--tol 1]        绝对定位，1px 容差 + 抗用户打断（推荐画图用）
 move DX DY                  相对移动（DY 正 = 向下）
 click [X Y] [--button left|right|middle] [--count N]
 drag X1 Y1 X2 Y2            定位->按下->定位->抬起（中间无线）
-drag-path "X1,Y1;X2,Y2;..." 一次按下-连续移动-抬起（画线条用这个）
+drag-path "X1,Y1;X2,Y2;..." 一次按下-连续移动-抬起（画线条必须用这个）
 scroll AMOUNT               滚轮，正 = 向上
 type "text" [--cps 40]      逐字符打字（仅 ASCII 0x20-0x7E，中文打不出来）
-key ctrl+s                  组合键
+key ctrl+s                  组合键（按下->30ms->全部抬起）
 tap enter                   单击一个键
-wins                        可见窗口列表（含 rect/前台/最小化）
+wins                        可见窗口列表（hwnd/title/pid/rect/foreground/minimized）
 focus "画图"                按标题子串切到前台
-read-text                   用 ctrl+a / ctrl+c 读前台窗口文字
+read-text                   用 ctrl+a / ctrl+c 读前台窗口文字（会覆盖剪贴板，默认恢复）
 clip get | clip set "..."   读写剪贴板
+launch CMD                  启动本机进程（不走 HID）
 info                        板子状态 + 屏幕 + 光标
 
-注意：--json 是全局参数，要写在子命令前面。
+说明
+  · brain.py 每次动作结束都会 release_all，脚本中断/异常也会释放，不会卡住键。
+  · 不要自己算"发多少 step 能到目标"：Windows 指针加速是非线性的，直接 point/locate。
+  · type 只支持 ASCII；要输入中文请用 clip set + key ctrl+v。
 
-六、批量脚本（画画强烈推荐：一次连接跑完，比逐条快约 10 倍）
-------------------------------------------------------------
+================================================================================
+ 第六部分 · 批量脚本（画画强烈推荐：一次连接跑完，比逐条命令快约 10 倍）
+================================================================================
 %PY% pc\brain.py --transport tcp run --script plan.json
 
-plan.json 示例（画一个 200x200 方框并验证）：
+plan.json 是一个动作数组。完整示例（开画图、画 200x200 方框、截图差分验证）：
 [
   {"op":"launch","cmd":"mspaint"},
   {"op":"sleep","ms":1200},
@@ -102,79 +142,256 @@ plan.json 示例（画一个 200x200 方框并验证）：
   {"op":"diff","a":"before.png","b":"after.png"}
 ]
 
-可用 op：look / point / locate / move / click / drag / drag_path / scroll / type /
-key / tap / hold / release / sleep / wins / focus / launch / clip_get / clip_set /
-read_text / diff / wait_change / info / stop
-常用参数：points=[[x,y],...]  button=left|right|middle  cps=打字速度
-某步失败默认中止，加 --keep-going 继续。
+可用 op（参数即 JSON 字段名）
+  look        : path?, region?
+  point       : x, y, tol?
+  locate      : x, y, tol?
+  move        : dx, dy
+  click       : x?, y?, button?, count?
+  drag        : x1, y1, x2, y2, button?
+  drag_path   : points=[[x,y],...], button?, guard?（默认 true，用户抢鼠标就重新锚定）
+  scroll      : amount
+  type        : text, cps?
+  key         : combo
+  tap         : key, hold_ms?
+  hold        : keys=[...]        release : （无参数，全抬）
+  sleep       : ms?
+  wins        : （无参数）
+  focus       : title
+  launch      : cmd
+  clip_get / clip_set : （无参数 / text）
+  read_text   : select_all?, restore_clip?
+  diff        : a, b, threshold?
+  wait_change : timeout_ms?, interval_ms?, threshold?
+  info        : （无参数）
+  stop        : （无参数，中止后续步骤）
 
-七、画图的标准流程（照做，别自由发挥）
---------------------------------------
-1) look 截图 -> 你自己看图，量出画布矩形（窗口别最大化）
-2) wins 找"画图" -> focus "画图"（不要改窗口大小/位置）
-3) 在截图上规划折线：每一笔是一串点。圆形/弧线就多打点（间距 4-8 px）
+默认某步失败就中止；加 --keep-going 继续。
+
+================================================================================
+ 第七部分 · 画图标准流程（照做，别自由发挥）
+================================================================================
+1) look 截图 -> 你自己看图，量出画布矩形（不要把窗口最大化）
+2) wins 找"画图" -> focus "画图"（不要改窗口大小/位置/层级）
+3) 在截图上规划折线：一笔 = 一串点
+     · 直线：两端点即可
+     · 圆弧/曲线：每 4-8 px 打一个点（点太稀会变成折线，太密速度慢）
+     · 圆：参数方程多点采样，间距按周长/点数算
 4) 写成 plan.json -> run --script plan.json 执行
 5) 再 look 一次 -> 自己看图检查；必要时 diff 做像素差分
-6) 汇报：画了几笔、耗时、误差、哪里不理想
-参考实现（复杂图、窗口检测、防遮挡、线宽自适应）：
-  tools\draw-rage.py --detect   只检测不动笔
-  tools\draw-rage.py --plan     只打印笔画坐标
-  tools\draw-rage.py --mock     离屏验证几何
+6) 汇报：画了几笔、耗时、落点误差、哪里不理想
 
-八、精度与换设备标定
---------------------
-- 相对鼠标 + GetCursorPos 闭环，落点误差实测约 1 px（2560x1440 @125%）。
-- 不要自己算"发多少步能到目标"（Windows 指针加速非线性），直接 point/locate。
-- 换到别的电脑/分辨率，先跑一次（约 10 秒，会短暂占用鼠标）：
+现成参考实现（复杂图、窗口检测、防遮挡、线宽自适应、离屏几何校验）：
+  tools\draw-rage.py --detect   只检测窗口/画布，不动笔
+  tools\draw-rage.py --plan     只打印笔画坐标，不动笔
+  tools\draw-rage.py --mock     离屏渲染校验几何，无副作用
+  tools\draw-rage.py            真画（--no-move 表示即使和聊天窗口重叠也不移动窗口）
+
+画图经验
+  · 线条必须用 drag-path（一次按下连续移动）；用 drag 画出来是断开的。
+  · 大范围移动前先 locate 到起点附近，再按下，能明显减少起笔偏差。
+  · 复杂图案先画外轮廓再画细节；颜色/粗细切换要点工具栏按钮，按钮位置先用 look 量。
+  · 画完一定要 look 复核；用户可能正看着屏幕。
+
+================================================================================
+ 第八部分 · 精度与换设备标定
+================================================================================
+· 相对鼠标 + GetCursorPos 闭环，落点误差实测约 1 px（2560x1440 @125%）。
+  实测证据：5 个验收点（四角内缩 + 屏幕中心）最大误差 1 px；CNC 式四角撞边
+  停在 (0,0)/(2559,0)/(2559,1439)/(0,1439)，反推桌面 2560x1440 与系统 API 一致。
+· 不要开环算步数；用 point / locate / drag_path 让 brain 收敛。
+· 换电脑/分辨率/缩放开画之前，先跑一次（约 10 秒，会短暂占用鼠标）：
     %PY% tools\home-calibrate.py --transport tcp --apply
-  它会用"撞屏幕四边"的方式（CNC 四角归零）量出屏幕尺寸和位移增益并存档，
-  之后那台设备自动生效（档案路径 C:\ProgramData\dsh\pointer-profile.json）。
+  原理：屏幕四边 = 硬限位，撞四角得到绝对参考和屏幕尺寸，再在屏幕中心重测
+  count->px 增益（Windows 指针加速曲线），结果按"分辨率|虚拟桌面|DPI模式"存进
+  C:\ProgramData\dsh\pointer-profile.json。之后 brain 启动时自动应用（无需再标定）。
+· 查看档案：%PY% pc\pointer_profile.py status
 
-九、红线（违反会直接干扰用户，务必遵守）
-----------------------------------------
+================================================================================
+ 第九部分 · 红线（违反会直接干扰用户，务必遵守）
+================================================================================
 1. 只在用户明确要求时操作键鼠，不要"顺手"点一下或打字。
 2. 绝对不要往聊天窗口打字（历史事故：把字母打进了用户正在用的窗口）。
 3. 不最大化、不移动、不缩放用户的画图窗口和聊天窗口。
-4. 不点未知按钮、不关窗口、不改系统设置（不碰注册表）。
-5. 命令前后要确保没有按住的键（brain.py 默认会自动 release_all）。
-6. 一次只跑一个客户端（透传是独占的），不要并发。
+4. 不点未知按钮、不关窗口、不改系统设置（不碰注册表/指针加速设置）。
+5. 命令前后确保没有按住的键（brain.py 默认自动 release_all）。
+6. 一次只跑一个客户端（透传独占），不要并发。
 7. 板子报 board_busy / 超时就停手报告，不要反复重试烧串口。
-8. 别动固件代码：不要改 firmware\ 下任何文件、不要重新编译、不要烧录/刷板子，
-   也不要改网页代码。固件和网页都已验证过没有问题，那是你干活的工具，不是让你修的项目；
-   真要报问题，只说现象和复现步骤，不要自己上手改。
-
-十、常见坑
-----------
-截图是 2048x1152 而不是 2560x1440    进程没开 DPI 感知 -> 用 brain.py / eyes.py
-移动"少走/多走"                      指针加速 -> 用闭环 point/locate，别开环算步数
-透传期间网页数字不动                正常：透传独占串口，hub 暂停轮询，断开后恢复（<=1s）
-type 打不出中文                     协议只支持 ASCII 0x20-0x7E
-画出来的线断断续续                   用 drag-path（一次按下连续移动），别用 drag
-
-十一、更多资料（都在同一个仓库里，需要时再读）
-----------------------------------------------
-docs\agent-handoff.md        交接全文（最详细）
-docs\pointer-calibration.md  指针精度/四角归零/换设备适配
-docs\brain-usage.md          动作层详解与更多示例
-docs\protocol.md             串口 JSON 协议（帧格式/命令/错误码）
-docs\web-dashboard.md        hub/网页/接口/TCP 透传/部署
-docs\hardware-facts.md       板子硬件事实（引脚/TF 卡/USB/电源）
-docs\capabilities.json       机器可读能力清单
-
-十二、接上之后先回这一句
-------------------------
-"自检 5 条结果：info ok=true（屏幕 2560x1440，光标 x,y），look 生成了
-pc\shot.png，wins 找到 N 个窗口。已接上，等你给画画任务。"
-
-十三、附：只读 HTTP 接口（查状态用，不能用来画画）
---------------------------------------------------
-GET http://127.0.0.1:8765/api/board    板子状态：CPU/内存/TF卡/温度/UART/PM
-GET http://127.0.0.1:8765/api/health   hub/板子/透传是否正常
-GET http://127.0.0.1:8765/api/pc       本机状态（页面已不用，接口保留）
-POST /api/cmd                          白名单命令；其中 mouse_move 被安全限制为
-                                       只能发 dx=dy=0，无法用于绘图
-说明：想真正操作桌面（画画），必须本地跑命令走 --transport tcp。
+8. 别动固件代码：不改 firmware\ 下任何文件、不重新编译、不烧录/刷机；也不改 web\。
+   固件和网页都已验证无已知问题，是你干活的工具，不是待修的项目。
+   要报问题只说现象和复现步骤。
 
 ================================================================================
- END —— 现在从「四、自检 5 条命令」开始，把结果报给用户。
+ 第十部分 · 常见坑 / 排障
+================================================================================
+截图是 2048x1152 而不是 2560x1440    进程没开 DPI 感知 -> 用 brain.py / eyes.py
+移动"少走/多走/绕远"                 指针加速 -> 用闭环 point/locate，别开环算
+type 打不出中文                      协议只支持 ASCII 0x20-0x7E -> 用剪贴板 ctrl+v
+画出来的线断断续续                   用 drag-path（一次按下连续移动），别用 drag
+透传期间网页数字不动                 正常：透传独占串口，hub 暂停轮询；断开后 ≤1 s 恢复
+look 之后光标准确但画图偏几像素      画笔有宽度/画布有偏移 -> 先在画布上点一个参考点校准
+板子无响应（board_busy）             有僵尸锁/别进程占用 -> 等看门狗（≤1 分钟）
+hub 挂了                            计划任务 dsh-hub 可手动启动；看门狗 dsh-hub-watch 每 1 分钟自愈
+串口重开导致板子重启                 CH340 的 DTR/RTS 行为，属正常；重开后等 2 s 再用
+浏览器页面空白                       http://127.0.0.1:8765/ ；改了 CSS 要 Ctrl+F5
+
+================================================================================
+ 第十一部分 · 板子 / 固件 / 协议事实（接手排障用）
+================================================================================
+硬件
+  · 芯片 ESP32-P4（本板实测 rev v1.3 早期硅片，编译配置
+    CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y，因此 CPU 只有 40 / 360 MHz 两档）
+  · 16 MB Flash（QIO 80 MHz，app 分区 3 MB @0x10000，分区表 @0x8000）
+  · 32 MB PSRAM（实测 33554432 B 可用）
+  · USB：设备模式 HS，专用 USB_DM/DP 引脚；VID 0x303A / PID 0x4004，
+    字符串 "JC-ESP32P4-M3 Agent" / "P4 HID Bridge"，Serial = 芯片 MAC
+  · UART0：GPIO37 TXD / GPIO38 RXD -> CH340C -> COM7，115200 8N1
+  · TF 卡槽：microSD，4bit/20MHz，无独立 CD 引脚（cd 字段恒 null）
+  · 接口：板上有多个 Type-C —— 烧录/协议走「转 UART 口」（CH340 -> COM7），
+    HID 设备走 P4 原生 USB 2.0 HS OTG 口（VID_303A / PID_4004）；两个口都要插才有"手"。
+    具体丝印归属以原理图为准（本文件不推断左右位置）。
+  · 供电要求 ≥ 500 mA @5V；不要碰 GPIO 7,8 / 9-13 / 48 / 21 / 35,36 / 14-19,54 / 24-27
+
+固件 v1.2.0 能力
+  · HID 键盘（Report ID 1，boot 8 字节）+ 鼠标（Report ID 2，5 字节）
+  · 鼠标相对移动，单报 |dx,dy,| <= 127，超出自动拆多帧；EP IN 0x81 / 16 B / bInterval 4
+    （HS 1 ms/帧、FS 4 ms/帧）
+  · 安全释放：默认 1500 ms 无任何 PC 报文 -> 强制 release_all + safety_release 事件
+  · 统计：stats（CPU 双核占用/频率/内存/PSRAM/温度/任务栈/HS 栈水位/TF 卡/UART/HID/PM）
+  · TF 卡：sd_test（1 MB 读写校验测速）、sd_remount（免重启换卡）、sd_format（破坏性，
+    需 confirm:"ERASE"）
+  · 省电调度 PM：默认 fixed360（固定 360 MHz）；dfs=1 时为 adaptive（40-360 MHz，
+    带锁提升与 500 ms 迟滞）；measured_mhz 是独立测得的物理频率证据。
+    ★ 该开关不写 NVS：重启后回到默认 fixed360。
+  · 温度：temp_c / temp_warn（默认 70 °C 告警），支持 set temp_warn_c / temp_throttle_c
+
+协议（UART JSON-lines，proto 1.2）
+  · 请求：{"cmd":"<name>","id":<int 可选>,...}；带 id 必须回同 id 响应；
+    不带 id = fire-and-forget
+  · 响应：{"ok":true|false,"id":N,...}；失败带 "err"
+  · 事件：{"evt":"hid_mounted|hid_unmounted|safety_release|boot",...}
+  · 所有响应/事件带 "t"（开机毫秒）；未知字段必须忽略；未知 cmd -> err:"unknown_cmd"
+  · 帧：一行一个 JSON，请求 <=512 字节；stats 响应约 1.5 KB（PC 侧行缓冲 >=4096）
+  · 命令表：ping / status / keepalive / set(key,value) / stats / sd_test(bytes?)
+    / key(keys[]) / key_tap(keys[],hold_ms?) / key_down / key_up / release_all
+    / text(text,cps?) / mouse_move(dx,dy) / mouse_btn(btn,action) / mouse_scroll(dy)
+    / mouse_click(btn?,count?,interval_ms?) / sd_remount / sd_format(confirm,fs?)
+  · set 的 key：safety_timeout_ms(0-60000) / temp_warn_c / temp_throttle_c / dfs(0|1)
+  · 错误码：bad_json / unknown_cmd / bad_arg / bad_key / unsupported_char /
+    not_mounted / rate_limited
+  · 限流 200 条/秒（固定窗口）；release_all 永远免限流（安全优先）
+  · 键名：修饰键 leftctrl/leftshift/leftalt/leftgui(=win/cmd/meta/super)/右侧同名；
+    普通键 a-z 1-9 0 enter esc backspace tab space minus equal leftbracket
+    rightbracket backslash semicolon quote grave comma period slash capslock f1-f12
+    printscreen scrolllock pause insert home pageup delete end pagedown
+    right left down up numlock kp_* application power
+  · 实测性能（真板）：ping 往返 18.4 ms；mouse_move ack 12.5 ms；dx=1000 拆 8 帧
+    19.6 ms；连发 332 条/秒；安全释放 2.2 s 静默后按键已抬起
+
+当前状态快照（2026-10-18 01:2x，真板）
+  · uptime 33.7 分钟，无重启；CPU c0 0.5% / c1 0%，360 MHz
+  · 内存 heap 可用 546775 B / 历史最低 493336 B；PSRAM 可用 33516292 / 33554432 B
+  · 温度 28.6 °C（告警阈值 70）
+  · TF 卡：mounted=true，FAT32，容量 60906 MB，可用 60870 MB，4bit/20MHz
+  · PM：governor=fixed360，measured_mhz=359（物理频率证据），boosts=37，downs=30
+  · HID mounted=true；UART rx_ok=2161 / rx_bad=0 / tx_ok=2163；任务 9 个
+
+构建环境（如果你只是用它，可跳过；不要编译）
+  · ESP-IDF v5.5.6：D:\esp\idf-full\esp-idf-v5.5.6
+  · IDF Python：D:\esp\python_env\Scripts\python.exe
+  · 构建：idf.py -C firmware build；烧录：idf.py -C firmware -p COM7 flash monitor
+    （烧录前必须先停 hub / 释放板子锁，否则串口被占）
+  · 改了 sdkconfig.defaults 后要删 firmware\sdkconfig 再构建才会生效
+  · 芯片是 rev v1.3：REV_LESS_V3 配置限制了 40/360 MHz，这是设计约束不是 bug
+
+================================================================================
+ 第十二部分 · 网页 / hub / HTTP 接口
+================================================================================
+页面（只读板子状态 + DFS 开关）
+  http://127.0.0.1:8765/            本机
+  http://192.168.1.221:8765/        局域网 / 手机（同一 Wi-Fi）
+  内容：CPU 双核占用/频率、内存、PSRAM、温度、任务表、TF 卡、UART、PM（含实测 MHz）、
+        DFS 开关（fixed360 <-> adaptive）、立即刷新。页面已移除本机 PC 面板。
+  改样式后要 Ctrl+F5；自检：python tools\web-layout-check.py（6 视口 + 真实点击）
+
+接口
+  GET  /api/board    板子状态：{"ok":true,"stats":{...},"ts":...,"age_ms":...,"port":"COM7",
+                     "serial_open":true,"passthrough":false}
+                     离线：{"ok":false,"err":"board_offline",...}
+  GET  /api/health   {"ok":true,"board":{state,serial_open,passthrough,...},"pc_ready":true,
+                     "tcp_passthrough_port":8766}
+  GET  /api/pc       本机状态（页面已不使用，接口保留）
+  GET  /api/shutdown 仅 127.0.0.1/::1；优雅退出 hub
+  POST /api/cmd      白名单 {"ping","stats","set","sd_remount","sd_test","mouse_move"}；
+                     sd_format 仅本机且需 confirm:"ERASE"；
+                     mouse_move 被安全护栏限制为 dx=dy=0（覆盖 HID 发送路径但不动光标）
+                     => HTTP 接口不能用来画画，画画必须本地跑 brain.py
+
+TCP 透传 127.0.0.1:8766
+  · 给 pc/brain.py 的裸串口替代；一次只服务一个客户端，独占
+  · 连上后把客户端字节原样转 COM7、COM7 字节原样回客户端（JSON-lines 不变）
+  · 透传期间 stats 轮询暂停，断开自动恢复（页面短暂标灰，正常）
+
+部署（无人值守）
+  · 计划任务 dsh-hub（开机启动，hidden）跑 pc\hub.py；任务 dsh-hub-watch 每 1 分钟
+    跑看门狗（pythonw），健康检查失败会杀掉僵死监听并重启 hub
+  · 启动方式全部通过 wscript.exe //B run-hidden.vbs 隐藏窗口，桌面不会弹 CMD
+  · 日志/脚本在 C:\ProgramData\dsh\（watchdog.log 等）
+  · 手动重启 hub：schtasks /Run /TN dsh-hub；停止：GET /api/shutdown（本机）
+
+================================================================================
+ 第十三部分 · 仓库结构 / 文档索引
+================================================================================
+仓库根：%USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+  README.md              项目总览
+  HANDOFF-TO-AI.txt      本文件（发给 AI 的全量版）
+  firmware/              ESP-IDF 工程（CMakeLists / main / sdkconfig.defaults / partitions）
+  pc/                    hub.py 网页+串口; brain.py 动作层+闭环定位; eyes.py 截屏;
+                         verify.py 差分; agent_bridge.py 低层协议 CLI; pointer_profile.py
+                         transport_uart.py / transport_tcp.py / board_lock.py
+  web/                   index.html / style.css / app.js / favicon.svg
+  tools/                 home-calibrate.py 四角标定; calibrate-pointer.py 开环标定;
+                         draw-rage.py 画图; board_lock.py 板子锁; web-layout-check.py 页面自检
+  docs/                  详见下面的文档列表
+
+文档（需要细节时再读）
+  docs\protocol.md           串口协议契约 v1.2（帧/命令/错误码/键名/HID 描述符/安全语义/实测性能）
+  docs\hardware-facts.md     硬件事实取证（烧录参数、GPIO、USB、供电、分区表、芯片版本）
+  docs\brain-usage.md        动作层用法与真实演示记录
+  docs\pointer-calibration.md 指针精度、四角归零标定、换设备自动适配、绝对坐标 HID 路线
+  docs\web-dashboard.md      网页/hub/接口/透传/部署/看门狗/自检
+  docs\bringup-runbook.md    上电/烧录/验收手册
+  docs\agent-handoff.md      交接说明的 markdown 版
+  docs\capabilities.json     机器可读能力清单
+
+================================================================================
+ 第十四部分 · 接上之后先回这一句
+================================================================================
+"自检 5 条结果：info ok=true（屏幕 2560x1440，光标 x,y），look 生成了 pc\shot.png，
+wins 找到 N 个窗口。已接上，等你给画画任务。"
+
+================================================================================
+ 附录 · 十个高频问答
+================================================================================
+Q1 我能直接用 HTTP 接口画画吗？           不能。POST /api/cmd 的 mouse_move 被限制
+                                          为 dx=dy=0；画画必须本地跑 brain.py --transport tcp。
+Q2 为什么不用 agent_bridge.py 画画？      它走 uart 直连，需要板子锁；hub 占着串口。
+                                          调试单条协议命令可以用它，但 hub 在跑时用不了。
+Q3 一次能画多少笔？                       一个 plan.json 里几十~几百步都行（一次连接），
+                                          但建议分批：每 20-40 笔 look 一次复核。
+Q4 画图偏了几像素怎么办？                 先用 look 量画布真实边界，起点用 locate 精确落位；
+                                          画笔有宽度，线宽大时坐标按半宽内缩。
+Q5 用户的鼠标动了怎么办？                 brain 的 guard 会检测到用户介入，重新锚定而不是硬拽；
+                                          drag_path 时有 guard 参数（默认开）。
+Q6 会把我按住的键卡住吗？                 不会：每条命令结束 release_all；固件还有 1500 ms
+                                          安全释放兜底。
+Q7 板子会过热吗？                         当前 28.6 °C，阈值 70 °C 告警；PM 有温度联锁。
+Q8 想改板子固件/网页怎么办？              不要改。两者已验证无已知问题，是工具不是待修项目。
+Q9 换一台电脑（比如 1080p）要做什么？     跑一次 tools\home-calibrate.py --transport tcp --apply
+                                          （10 秒），之后自动适配。
+Q10 板子灯/重启/拔插会怎样？              重开会重启板子（CH340 DTR/RTS 行为），等 2 s 后
+                                          hub 自动重连；/api/board 会短暂 ok=false，正常。
+
+================================================================================
+ END —— 从「第四部分 · 自检 5 条命令」开始，把结果报给用户。
 ================================================================================
