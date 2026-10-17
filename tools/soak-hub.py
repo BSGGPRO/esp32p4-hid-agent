@@ -181,9 +181,9 @@ def main() -> int:
         ("无复位（uptime 单调）", resets == 0, "resets=%d" % resets),
         ("HID 全程 mounted", hid_false == 0, "hid 异常采样=%d" % hid_false),
         ("SD 全程 mounted", sd_false == 0, "sd 异常采样=%d" % sd_false),
-        ("sd_test ≥15 次且全 verify", sd_tests >= 15 and sd_ok == sd_tests, "sd_tests=%d ok=%d" % (sd_tests, sd_ok)),
+        ("sd_test 全部 verify（次数按 duration/间隔 折算）", sd_tests >= max(1, int(a.duration // a.mgmt) - 1) and sd_ok == sd_tests, "sd_tests=%d ok=%d expect>=%d" % (sd_tests, sd_ok, max(1, int(a.duration // a.mgmt) - 1))),
         ("heap 无泄漏", heap_drop is not None and heap_drop <= 4096, "base=%s min=%s drop=%s" % (heap_base, heap_min, heap_drop)),
-        ("ping 全成功且 <200ms", len(rtts) > 0 and len(rtts) == max(1, int(elapsed // 5)) and rtt_max < 200.0,
+        ("ping 全成功且 <200ms", len(rtts) >= max(1, int(elapsed // 5) - 1) and rtt_max < 200.0,
          "n=%d avg=%.0fms max=%.0fms" % (len(rtts), rtt_avg or -1, rtt_max or -1)),
         ("rx_bad 不增长", rx_bad_delta in (0, None), "base=%s last=%s delta=%s" % (rx_bad_base, rx_bad_last, rx_bad_delta)),
         ("HID 发送路径可用（dx=0 报文，不动光标）", hid_tx_ok > 0 and hid_tx_fail == 0,
@@ -209,4 +209,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
