@@ -164,20 +164,22 @@ netsh advfirewall firewall add rule name="dsh-hub" dir=in action=allow protocol=
 - `temp_warn=true` → 红色 `⚠ 过热`；
 - 无告警但 `temp_c ≥ 70 °C` → 琥珀色（本地阈值提示，不代表固件告警）。
 
-### 4.2 本机面板（右）
+### 4.2 本机面板（已移除）
 
-| 区域 | 内容 |
-|---|---|
-| 指标行 | CPU 总占用、CPU 主频、内存占用率、开机时长 |
-| CPU 每核 | 环形总占用 + 32 个逻辑核的实时条形（≥65% 琥珀、≥85% 红） |
-| 内存 | 已用/总量 + 占比条 |
-| GPU | nvidia-smi：型号、利用率、温度、显存已用/总量（多卡时逐卡显示） |
-| NPU | 自动探测；探测不到显示「未检测」（本机 AMD Ryzen 9 8945HX + RTX 5060，未发现 NPU） |
-| 进程 Top | 名称/PID/CPU%/内存；可切换「按 CPU / 按内存」排序 |
+**2026-10-18 按用户要求移除**：页面现在只显示板子面板（单栏），本机（PC）面板整块删除。
+
+- 前端 `web/index.html` / `web/app.js` 不再引用 `api/pc`、不再有 `pollPc`，少一份每秒轮询开销；
+- hub 的 `/api/pc` 接口与 PC 采样**保留**（`pc/selftest.py`、`docs/evidence/web-selftest.py` 仍在使用），
+  只是页面不消费了；如需要可加 `--no-pc` 关掉采样（尚未实现，当前 1 Hz 采样开销约 100–300 ms/s，
+  对稳定性无影响，实测 10 分钟 soak 期间 CPU/内存平稳）；
+- `docs/evidence/web-selftest.py` 的断言已同步改为「页面不得再出现本机面板 id / api/pc / pollPc」，
+  当前 **70/70 PASS**。
+
+原面板内容（CPU 每核/内存/GPU/NPU/进程 Top）已随 HTML/JS 一并删除，历史上见 git 提交 `90d9555` 之前的版本。
 
 ### 4.3 断线、超时与离线态
 
-- 页面每秒轮询；单次请求超时（板子 2 s / 本机 2.5 s）自动重试，不弹窗。
+- 页面每秒轮询板子数据；单次请求超时（2 s）自动重试，不弹窗。
 - 超过 **3.2 s** 没新数据：面板整体标灰（降饱和），状态胶囊变「超时」。
 - 板子三种明确离线原因（hub 透传，不猜）：
   - `board_offline`：COM7 打不开（没插板/串口被占用/COM 号变了）；
@@ -235,7 +237,7 @@ TF 卡卡片下方有一张「动态调频（DFS）」卡片，数据来自 `sta
   不要再套一层 `stats.stats`（app.js 用 `renderBoard(raw.stats)`，selftest 有断言防回退）。
 - `age_ms` 是缓存年龄：> 3200 时页面标灰。
 
-### 5.2 `GET /api/pc`
+### 5.2 `GET /api/pc`（页面已不再使用）
 
 ```json
 {"ok":true,"ts":1792243648000,
@@ -432,3 +434,4 @@ Content-Type: application/json
 修复后回归：`docs/evidence/web-selftest.py` 69/69 PASS（含假串口透传压测），
 真机 `docs/evidence/web-board-online.py` 22/22 PASS（stats + 8766 ping/stats 往返）。
 **注意**：修复在 hub 进程启动时加载，改完代码需重启 hub 生效（`curl http://127.0.0.1:8765/api/shutdown` 后再启动）。
+

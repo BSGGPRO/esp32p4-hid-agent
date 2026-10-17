@@ -22,15 +22,14 @@
       </svg>
       <div class="brand-text">
         <h1>P4 HID Agent</h1>
-        <p class="sub">ESP32-P4 板载状态 · 本机状态</p>
+        <p class="sub">ESP32-P4 板载状态</p>
       </div>
     </div>
     <div class="topbar-right">
       <div class="pills">
         <span id="board-status" class="pill pill-wait">板子连接中…</span>
-        <span id="pc-status" class="pill pill-wait">本机连接中…</span>
       </div>
-      <button id="refresh-btn" class="btn" type="button" title="立即刷新两块数据">⟳ 立即刷新</button>
+      <button id="refresh-btn" class="btn" type="button" title="立即刷新板子数据">⟳ 立即刷新</button>
     </div>
   </header>
 
@@ -200,103 +199,10 @@
       </div>
     </section>
 
-    <!-- ===================== 本机面板 ===================== -->
-    <section id="pc-panel" class="panel panel-pc">
-      <div class="panel-head">
-        <div class="panel-title">
-          <span class="dot dot-pc" aria-hidden="true"></span>
-          <h2>本机 <span class="sub-inline">PC</span></h2>
-          <span class="meta mono">同源 · api/pc</span>
-        </div>
-        <span id="pc-updated" class="updated">等待数据</span>
-      </div>
-
-      <div id="pc-banner" class="banner hidden" role="status"></div>
-
-      <div id="pc-empty" class="empty">
-        <div class="empty-icon" aria-hidden="true">💻</div>
-        <p>正在等待本机数据…</p>
-        <small>本机数据由 hub 采集（CPU/内存/GPU/进程/NPU），页面与接口同源，无需跨域。</small>
-      </div>
-
-      <div id="pc-body" class="panel-body hidden">
-
-        <div class="metrics">
-          <div class="metric">
-            <span class="metric-label">CPU 总占用</span>
-            <span id="pc-cpu-total-val" class="metric-value">—</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">CPU 主频</span>
-            <span id="pc-cpu-mhz" class="metric-value">—</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">内存占用</span>
-            <span id="pc-mem-pct" class="metric-value">—</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">开机时长</span>
-            <span id="pc-uptime" class="metric-value">—</span>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h3>CPU 每核占用</h3>
-            <span id="pc-core-count" class="hint">—</span>
-          </div>
-          <div class="pc-cpu-top">
-            <figure class="gauge-fig gauge-fig-lg">
-              <canvas id="pc-cpu-gauge" class="gauge" width="112" height="112"></canvas>
-              <figcaption>总占用 <b id="pc-cpu-total-ring">—</b></figcaption>
-            </figure>
-            <div id="pc-cores" class="core-bars"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><h3>内存</h3><span id="pc-mem-extra" class="hint">—</span></div>
-          <div class="kv-grid">
-            <div class="kv"><span class="k">已用</span><b id="pc-mem-used" class="v">—</b></div>
-            <div class="kv"><span class="k">总量</span><b id="pc-mem-total" class="v">—</b></div>
-          </div>
-          <div class="bar-track"><i id="pc-mem-bar" class="bar-fill bar-amber" style="width:0%"></i></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><h3>GPU</h3><span class="hint">nvidia-smi</span></div>
-          <div id="pc-gpu-list" class="gpu-list"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head"><h3>NPU</h3><span class="hint">自动探测</span></div>
-          <div id="pc-npu" class="npu">探测中…</div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h3>进程 Top</h3>
-            <div class="sort-group">
-              <button id="sort-cpu" class="chip chip-active" type="button">按 CPU</button>
-              <button id="sort-mem" class="chip" type="button">按内存</button>
-            </div>
-            <span id="pc-proc-count" class="hint">—</span>
-          </div>
-          <div class="table-scroll table-scroll-proc">
-            <table id="pc-proc-table">
-              <thead><tr><th>进程</th><th>PID</th><th>CPU%</th><th>内存</th></tr></thead>
-              <tbody id="pc-proc-body"></tbody>
-            </table>
-          </div>
-        </div>
-
-      </div>
-    </section>
-
   </main>
 
   <footer class="footer">
-    <span>板子：同源 <code>api/board</code>（hub 经 COM7 串口采集） · 本机：同源 <code>api/pc</code></span>
+    <span>板子：同源 <code>api/board</code>（hub 经 COM7 串口采集，每秒刷新）</span>
     <span>每秒自动刷新 · <span id="footer-time">—</span></span>
     <span>断线自动重连，数据超时 3.2 s 自动标灰</span>
   </footer>

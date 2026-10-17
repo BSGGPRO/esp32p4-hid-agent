@@ -1,11 +1,13 @@
 'use strict';
 
 /* ============================================================
- * P4 HID Agent 网页仪表盘
+ * P4 HID Agent 网页仪表盘（只显示板子面板）
  *
- * 两块数据源（都与页面同源，由 PC 上的 pc/hub.py 提供）：
- *   1) 板子：GET api/board —— hub 独占 COM7，每秒发 stats 命令并缓存结果
- *   2) 本机：GET api/pc    —— hub 采集 CPU/内存/GPU/进程/NPU
+ * 数据源（与页面同源，由 PC 上的 pc/hub.py 提供）：
+ *   GET api/board —— hub 独占 COM7，每秒发 stats 命令并缓存结果
+ *
+ * 本机（PC）面板已于 2026-10-18 按要求移除；PC 统计接口仍由 hub 提供，
+ * 供其它工具使用，页面不再引用、也不再轮询（少一份后台采样开销）。
  *
  * 设计约束：
  *   - 纯原生 JS，无构建工具、无外网 CDN；
@@ -22,11 +24,8 @@
   // 常量
   // ------------------------------------------------------------------
   var API_BOARD = 'api/board';
-  var API_PC = 'api/pc';
   var BOARD_POLL_MS = 1000;        // 板子数据轮询周期
-  var PC_POLL_MS = 1000;           // 本机数据轮询周期
   var BOARD_TIMEOUT_MS = 2000;     // 单次请求超时（hub 自己的 stats 缓存最多 1 s 旧）
-  var PC_TIMEOUT_MS = 2500;
   var STALE_MS = 3200;             // 超过这个时间没新数据 = 数据超时（标灰）
   var HISTORY_LEN = 120;           // 双核曲线保留最近 120 个采样点
   var API_CMD = 'api/cmd';         // POST：网页按钮 -> hub -> 板子
@@ -180,13 +179,10 @@
   // ------------------------------------------------------------------
   var state = {
     board: { ok: false, fails: 0, lastOk: 0, lastErr: null, err: '', detail: '',
-             stats: null, passthrough: false },
-    pc: { ok: false, fails: 0, lastOk: 0, lastErr: null, data: null },
-    procSort: 'cpu'
+             stats: null, passthrough: false }
   };
 
   var boardBusy = false;
-  var pcBusy = false;
 
   // ------------------------------------------------------------------
   // fetch + 超时
@@ -434,7 +430,6 @@
   var gauge0 = null;
   var gauge1 = null;
   var cpuChart = null;
-  var gaugePc = null;
 
   function renderBoard(stats) {
     var cpu = stats.cpu || {};
@@ -660,207 +655,6 @@
   }
 
   // ==================================================================
-  // 本机面板渲染
-  // ==================================================================
-  var coreEls = [];
-
-  function renderPc(data) {
-    var cpu = data.cpu || {};
-    var mem = data.mem || {};
-    var cores = Array.isArray(cpu.cores) ? cpu.cores : [];
-
-    setText('pc-cpu-total-val', fmtPct(cpu.total_pct));
-    setText('pc-cpu-total-ring', fmtPct(cpu.total_pct, 0));
-    setText('pc-cpu-mhz', fmtMhz(cpu.mhz));
-    setText('pc-core-count', cores.length ? cores.length + ' 个逻辑核' : '—');
-    if (gaugePc) {
-      gaugePc.set(num(cpu.total_pct));
-    }
-    updateCoreBars(cores);
-
-    setText('pc-mem-used', fmtMb(mem.used_mb));
-    setText('pc-mem-total', fmtMb(mem.total_mb));
-    setText('pc-mem-pct', fmtPct(mem.pct));
-    setBar('pc-mem-bar', num(mem.pct));
-    setText('pc-mem-extra', mem.total_mb ? '总 ' + fmtMb(mem.total_mb) : '—');
-
-    renderGpu(data.gpu);
-    renderNpu(data.npu);
-    renderProcesses(data.processes);
-    setText('pc-uptime', fmtDuration(data.uptime_s));
-  }
-
-  function updateCoreBars(cores) {
-    var box = $('pc-cores');
-    if (!box) {
-      return;
-    }
-    if (coreEls.length !== cores.length || box.childElementCount !== cores.length) {
-      box.textContent = '';
-      coreEls = [];
-      for (var i = 0; i < cores.length; i += 1) {
-        var row = document.createElement('div');
-        row.className = 'core';
-
-        var label = document.createElement('span');
-        label.className = 'core-label';
-        label.textContent = 'C' + i;
-
-        var track = document.createElement('div');
-        track.className = 'core-track';
-        var fill = document.createElement('i');
-        fill.className = 'core-fill';
-        track.appendChild(fill);
-
-        var val = document.createElement('span');
-        val.className = 'core-val';
-        val.textContent = '—';
-
-        row.appendChild(label);
-        row.appendChild(track);
-        row.appendChild(val);
-        box.appendChild(row);
-        coreEls.push({ fill: fill, val: val });
-      }
-    }
-    for (var j = 0; j < cores.length; j += 1) {
-      var pct = num(cores[j]);
-      var el = coreEls[j];
-      if (!el) {
-        continue;
-      }
-      el.fill.style.width = (pct === null ? 0 : Math.max(0, Math.min(100, pct))) + '%';
-      el.fill.className = 'core-fill' + (pct !== null && pct >= 85 ? ' critical' : pct !== null && pct >= 65 ? ' hot' : '');
-      el.val.textContent = pct === null ? '—' : pct.toFixed(0) + '%';
-    }
-  }
-
-  function renderGpu(gpus) {
-    var box = $('pc-gpu-list');
-    if (!box) {
-      return;
-    }
-    box.textContent = '';
-    if (!Array.isArray(gpus) || gpus.length === 0) {
-      var none = document.createElement('div');
-      none.className = 'npu not-detected';
-      none.textContent = '未检测到 NVIDIA GPU（nvidia-smi 不可用）';
-      box.appendChild(none);
-      return;
-    }
-    for (var i = 0; i < gpus.length; i += 1) {
-      var gpu = gpus[i] || {};
-      var card = document.createElement('div');
-      card.className = 'gpu-card';
-
-      var name = document.createElement('div');
-      name.className = 'gpu-name';
-      name.textContent = gpu.name || 'NVIDIA GPU';
-      card.appendChild(name);
-
-      var util = num(gpu.util_pct);
-      var row = document.createElement('div');
-      row.className = 'gpu-row';
-      var track = document.createElement('div');
-      track.className = 'bar-track';
-      var fill = document.createElement('i');
-      fill.className = 'bar-fill';
-      fill.style.width = (util === null ? 0 : Math.max(0, Math.min(100, util))) + '%';
-      track.appendChild(fill);
-      row.appendChild(track);
-      var utilText = document.createElement('b');
-      utilText.textContent = util === null ? '—' : util.toFixed(0) + '%';
-      row.appendChild(utilText);
-      card.appendChild(row);
-
-      var stats = document.createElement('div');
-      stats.className = 'gpu-stats';
-      stats.appendChild(stat('温度', num(gpu.temp_c) === null ? '—' : num(gpu.temp_c).toFixed(0) + ' °C'));
-      stats.appendChild(stat('显存', gpu.mem_used_mb === null || gpu.mem_used_mb === undefined
-        ? '—'
-        : fmtMb(gpu.mem_used_mb) + ' / ' + fmtMb(gpu.mem_total_mb)));
-      card.appendChild(stats);
-      box.appendChild(card);
-    }
-  }
-
-  function stat(label, value) {
-    var span = document.createElement('span');
-    span.appendChild(document.createTextNode(label + ' '));
-    var b = document.createElement('b');
-    b.textContent = value;
-    span.appendChild(b);
-    return span;
-  }
-
-  function renderNpu(npu) {
-    var el = $('pc-npu');
-    if (!el) {
-      return;
-    }
-    if (npu && npu.detected === true && npu.name) {
-      el.textContent = '已检测：' + npu.name;
-      el.className = 'npu detected';
-    } else {
-      el.textContent = '未检测（本机没有可用 NPU，或驱动未暴露）';
-      el.className = 'npu not-detected';
-    }
-  }
-
-  function renderProcesses(processes) {
-    var body = $('pc-proc-body');
-    if (!body) {
-      return;
-    }
-    body.textContent = '';
-    if (!Array.isArray(processes) || processes.length === 0) {
-      setText('pc-proc-count', '0 个进程');
-      var emptyRow = document.createElement('tr');
-      var emptyCell = document.createElement('td');
-      emptyCell.colSpan = 4;
-      emptyCell.className = 'muted';
-      emptyCell.textContent = '暂无进程数据（PowerShell 采样中…）';
-      emptyRow.appendChild(emptyCell);
-      body.appendChild(emptyRow);
-      return;
-    }
-    var rows = processes.slice();
-    var sortBy = state.procSort;
-    rows.sort(function (a, b) {
-      if (sortBy === 'mem') {
-        return (num(b.mem_mb) || 0) - (num(a.mem_mb) || 0);
-      }
-      var ca = num(a.cpu_pct);
-      var cb = num(b.cpu_pct);
-      if (ca === null && cb === null) {
-        return (num(b.mem_mb) || 0) - (num(a.mem_mb) || 0);
-      }
-      if (ca === null) {
-        return 1;
-      }
-      if (cb === null) {
-        return -1;
-      }
-      return cb - ca;
-    });
-
-    setText('pc-proc-count', rows.length + ' 个进程');
-
-    for (var i = 0; i < rows.length; i += 1) {
-      var p = rows[i] || {};
-      var tr = document.createElement('tr');
-      var nameCell = cell(p.name || '?', '');
-      nameCell.title = p.name || '';
-      tr.appendChild(nameCell);
-      tr.appendChild(cell(p.pid === undefined ? '—' : fmtInt(p.pid), 'num mono'));
-      var cpuPct = num(p.cpu_pct);
-      tr.appendChild(cell(cpuPct === null ? '—' : cpuPct.toFixed(1), 'num'));
-      tr.appendChild(cell(fmtMb(p.mem_mb), 'num'));
-      body.appendChild(tr);
-    }
-  }
-
-  // ==================================================================
   // 轮询：板子
   // ==================================================================
   function pollBoard() {
@@ -900,35 +694,6 @@
       state.board.lastErr = String((err && err.detail) || (err && err.message) || err);
     }).then(function () {
       boardBusy = false;
-    });
-  }
-
-  // ==================================================================
-  // 轮询：本机
-  // ==================================================================
-  function pollPc() {
-    if (pcBusy) {
-      return;
-    }
-    pcBusy = true;
-    fetchJson(API_PC, PC_TIMEOUT_MS).then(function (data) {
-      if (!data || data.ok === false) {
-        throw new Error((data && (data.error || data.detail)) || '响应格式不符');
-      }
-      state.pc.ok = true;
-      state.pc.fails = 0;
-      state.pc.lastOk = Date.now();
-      state.pc.lastErr = null;
-      state.pc.data = data;
-      renderPc(data);
-      toggleHidden($('pc-empty'), true);
-      toggleHidden($('pc-body'), false);
-    }).catch(function (err) {
-      state.pc.ok = false;
-      state.pc.fails += 1;
-      state.pc.lastErr = String((err && err.message) || err);
-    }).then(function () {
-      pcBusy = false;
     });
   }
 
@@ -1039,46 +804,6 @@
       boardPill.className = 'pill pill-wait';
     }
 
-    // ---- 本机 ----
-    var pcPill = $('pc-status');
-    var pcPanel = $('pc-panel');
-    var pcAge = state.pc.lastOk ? now - state.pc.lastOk : Infinity;
-    var pcStale = pcAge > STALE_MS;
-    var pcBanner = $('pc-banner');
-
-    toggleClass(pcPanel, 'stale', Boolean(state.pc.data) && (pcStale || !state.pc.ok));
-
-    if (state.pc.ok && !pcStale) {
-      pcPill.textContent = '本机在线';
-      pcPill.className = 'pill pill-ok';
-      toggleHidden(pcBanner, true);
-      setText('pc-updated', '更新于 ' + fmtAgo(pcAge));
-    } else if (state.pc.data) {
-      pcPill.textContent = '本机数据超时';
-      pcPill.className = 'pill pill-warn';
-      setText('pc-updated', '最后更新 ' + fmtAgo(pcAge));
-      if (pcBanner) {
-        pcBanner.classList.remove('hidden');
-        pcBanner.classList.add('warn');
-        pcBanner.classList.remove('err');
-        pcBanner.textContent = '本机数据已 ' + Math.round(pcAge / 1000) + ' s 未更新，正在自动重连…';
-      }
-    } else if (state.pc.fails > 0) {
-      pcPill.textContent = '本机未连接';
-      pcPill.className = 'pill pill-err';
-      setText('pc-updated', '等待数据');
-      if (pcBanner) {
-        pcBanner.classList.remove('hidden');
-        pcBanner.classList.add('err');
-        pcBanner.classList.remove('warn');
-        pcBanner.textContent = '无法读取 api/pc：' + (state.pc.lastErr || '未知错误')
-          + '。hub 可能刚启动还在采样（1–2 s），已重试 ' + state.pc.fails + ' 次。';
-      }
-    } else {
-      pcPill.textContent = '本机连接中…';
-      pcPill.className = 'pill pill-wait';
-    }
-
     var t = new Date();
     setText('footer-time', pad2(t.getHours()) + ':' + pad2(t.getMinutes()) + ':' + pad2(t.getSeconds()));
   }
@@ -1091,7 +816,6 @@
     if (refresh) {
       refresh.addEventListener('click', function () {
         pollBoard();
-        pollPc();
       });
     }
 
@@ -1121,28 +845,6 @@
       });
     }
 
-    var sortCpu = $('sort-cpu');
-    var sortMem = $('sort-mem');    if (sortCpu) {
-      sortCpu.addEventListener('click', function () {
-        state.procSort = 'cpu';
-        toggleClass(sortCpu, 'chip-active', true);
-        toggleClass(sortMem, 'chip-active', false);
-        if (state.pc.data) {
-          renderProcesses(state.pc.data.processes);
-        }
-      });
-    }
-    if (sortMem) {
-      sortMem.addEventListener('click', function () {
-        state.procSort = 'mem';
-        toggleClass(sortMem, 'chip-active', true);
-        toggleClass(sortCpu, 'chip-active', false);
-        if (state.pc.data) {
-          renderProcesses(state.pc.data.processes);
-        }
-      });
-    }
-
     var resizeTimer = null;
     window.addEventListener('resize', function () {
       if (resizeTimer) {
@@ -1157,10 +859,6 @@
           gauge1.w = 0;
           gauge1.resizeIfNeeded();
         }
-        if (gaugePc) {
-          gaugePc.w = 0;
-          gaugePc.resizeIfNeeded();
-        }
         if (cpuChart) {
           cpuChart.w = 0;
           cpuChart.resizeIfNeeded();
@@ -1172,7 +870,6 @@
   function init() {
     gauge0 = new Gauge($('cpu-gauge0'), '#22d3ee');
     gauge1 = new Gauge($('cpu-gauge1'), '#a78bfa');
-    gaugePc = new Gauge($('pc-cpu-gauge'), '#a78bfa');
     cpuChart = new LineChart($('cpu-chart'), ['#22d3ee', '#a78bfa']);
     cpuChart.resizeIfNeeded();
 
@@ -1180,9 +877,7 @@
 
     // 轮询：每秒；用 inFlight 防重入
     setInterval(pollBoard, BOARD_POLL_MS);
-    setInterval(pollPc, PC_POLL_MS);
     pollBoard();
-    pollPc();
 
     // 状态/超时检查：每 250 ms（比轮询更细，断线时标灰更及时）
     setInterval(updateStatuses, 250);
