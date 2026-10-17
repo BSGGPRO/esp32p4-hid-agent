@@ -1,0 +1,48 @@
+# =============================================================================
+# esp32p4-hid-agent firmware defaults (see docs/protocol.md v1.0.1)
+# =============================================================================
+
+# --- UART0 is the protocol link: it must never be polluted by logs -----------
+# protocol.md §1: firmware default is ESP_LOG_NONE; RX_DEBUG (Kconfig.projbuild)
+# is the only switch that turns logging back on for this project's tags.
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
+
+# 1 ms tick: needed for fine hold_ms / cps / safety pacing.
+CONFIG_FREERTOS_HZ=1000
+
+# --- TinyUSB: one HID interface, two report IDs (protocol.md §5) -------------
+CONFIG_TINYUSB_HID_COUNT=1
+
+# VID/PID: protocol.md §5 (v1.0.1 ruling) = VID 0x303A (Espressif, the
+# esp_tinyusb default) and the esp_tinyusb auto PID 0x4004
+# (0x4000 | CFG_TUD_HID << 2).  Both are the component defaults, so no PID
+# override is configured on purpose.
+CONFIG_TINYUSB_DESC_USE_ESPRESSIF_VID=y
+CONFIG_TINYUSB_DESC_USE_DEFAULT_PID=y
+
+# --- Flash (board facts: JC-ESP32P4-M3, 16 MB, QIO @ 80 MHz) -----------------
+# Note: esp_tinyusb v2 has NO TINYUSB_RHPORT_HS symbol any more - the port is a
+# run-time field (tinyusb_config_t.port) and TINYUSB_DEFAULT_CONFIG() already
+# selects TINYUSB_PORT_HIGH_SPEED_0 on ESP32-P4.  See README.md "High-speed port".
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# --- Console ----------------------------------------------------------------
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+
+# --- Chip revision: THIS BOARD IS EARLY SILICON (v1.3) ----------------------
+# Measured with `esptool --chip esp32p4 -p COM6 flash_id` on the actual board:
+#   Chip is ESP32-P4 (revision v1.3), Crystal 40MHz, MAC 80:f1:b2:d3:9c:e6,
+#   Detected flash size: 16MB.
+# ESP-IDF 5.5 defaults to ESP32P4_REV_MIN_301 (v3.1) and its Kconfig states that
+# rev <3.0 and rev >=3.0 support are MUTUALLY EXCLUSIVE (huge hardware diff).
+# Flashing a v3.1-min build onto this v1.3 chip fails hard with:
+#   "bootloader/bootloader.bin requires chip revision in range [v3.1 - v3.99]
+#    (this chip is revision v1.3)"
+# Do NOT work around that with `esptool --force`: the binary would lack the
+# early-silicon workarounds. Select the <3.0 branch instead.
+CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
+CONFIG_ESP32P4_REV_MIN_100=y

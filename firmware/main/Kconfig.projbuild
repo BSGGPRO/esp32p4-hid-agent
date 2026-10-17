@@ -1,0 +1,16 @@
+menu "HID Agent configuration"
+
+    config HID_AGENT_RX_DEBUG
+        bool "Enable UART0 debug logging (pollutes the JSON protocol stream)"
+        default n
+        help
+            protocol.md §1 requires the firmware to stay silent on UART0, because
+            UART0 carries the JSON-lines protocol.  When this option is disabled
+            (default) esp_log_level_set("*", ESP_LOG_NONE) is applied and no log
+            line can ever be interleaved with protocol frames.
+
+            Enabling it raises the log level of this project's components only
+            ("hid_agent", "hid_device", "cmd_proto", "uart_link") to INFO.
+            Never enable it while the PC bridge is parsing the port.
+
+endmenu

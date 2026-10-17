@@ -1,0 +1,235 @@
+﻿
+### 1) agent_bridge.py --help
+> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py --help
+usage: agent_bridge.py [-h] [--transport {uart,tcp,mock}] [--port PORT]
+                       [--baud BAUD] [--host HOST] [--timeout SEC] [--no-wait]
+                       [--repeat N] [--no-release-on-exit] [--json] [--stats]
+                       [--quiet] [--verbose] [--list-ports] [--list-keys]
+                       <command> ...
+
+JC-ESP32P4-M3 HID Agent — PC 桥接 CLI（protocol.md v1.0.1，零第三方依赖）
+PC bridge CLI for the P4 HID agent (protocol v1.0.1, stdlib + Pillow only).
+
+positional arguments:
+  <command>
+    ping                探活：ping -> pong/fw/proto/caps / liveness probe
+                        (ping/pong)
+    status              查询 HID 状态与计数器 / query HID status/counters
+    keepalive           刷新固件安全超时 / refresh firmware safety timeout
+    set                 设置固件参数（v1: safety_timeout_ms 0-60000） / set firmware
+                        parameter
+    mouse-move          鼠标相对移动 DX DY（dy 正=向下） / relative mouse move DX DY
+    mouse-scroll        滚轮 DY（正=上滚） / mouse wheel DY (positive = up)
+    mouse-click         鼠标连击 / mouse click
+    mouse-btn           鼠标按键 down/up/click / mouse button down/up/click
+    key-combo           组合键：按下->hold_ms->抬起（key_tap） / key combo (key_tap)
+    key-down            按下并保持（不自动抬起） / press and hold keys
+    key (key-hold)      同 key-down（协议别名） / alias of key-down
+    key-up              抬起指定键 / release keys
+    release-all         清空全部按键与鼠标按钮（HID 全 0） / release everything (HID all-
+                        zero)
+    text                逐字符输入（仅 ASCII 0x20-0x7E） / type text (ASCII printable
+                        only)
+    screenshot          全屏截图存 PNG / full-screen screenshot to PNG
+    e2e-demo            端到端演示：截屏->鼠标移动->截屏->差分 / end-to-end demo:
+                        shot->move->shot->diff
+    events              监听异步事件 N 秒（§3.5） / listen for async events
+    list-ports          别名：--list-ports / alias of --list-ports
+    list-keys           别名：--list-keys / alias of --list-keys
+    selftest            内置 mock P4 自测（无需硬件） / built-in mock P4 selftest (no
+                        hardware)
+    verify              比较两张 PNG 的像素差异 / pixel-diff two PNGs
+
+options:
+  -h, --help            show this help message and exit
+  --transport {uart,tcp,mock}
+                        传输后端：uart=真板子 / tcp=C6预留未实现 / mock=内存回环自测 / transport
+                        backend: uart=real board / tcp=stub / mock=loopback
+  --port PORT, -p PORT  串口名（uart: COM7）或 TCP 端口号（tcp: 8888） / serial port
+                        (uart: COM7) or TCP port (tcp: 8888)
+  --baud BAUD           波特率（默认 115200 8N1，协议 §1） / baud rate (default 115200
+                        8N1)
+  --host HOST           tcp 后端主机（预留） / TCP host (stub)
+  --timeout SEC         协议响应超时秒数（默认 1.5） / response timeout seconds (default
+                        1.5)
+  --no-wait             连发模式：不带 id、不等响应（§2，用于低延迟连发） / fire-and-forget: no id,
+                        no ack (low-latency bursts)
+  --repeat N            动作命令重复 N 次（配合 --no-wait 做连发） / repeat action N times
+  --no-release-on-exit  退出时不发 release_all（默认**会**发，§6.4；跨进程按住键时才需要） / do NOT
+                        send release_all on exit (default sends it, §6.4)
+  --json                原始 JSON 输出 / raw JSON output
+  --stats               结束时打印收发统计 / print tx/rx stats at the end
+  --quiet, -q           安静模式 / quiet
+  --verbose, -v         打印每条收发帧 / log every frame
+  --list-ports          列出本机串口并识别板子（无硬件也能跑，exit 0） / list serial ports and
+                        identify the board
+  --list-keys           打印 protocol.md §4 键名表 / print the §4 key table
+
+常用示例 / examples:
+  python agent_bridge.py --list-ports                 # 列串口并识别板子
+  python agent_bridge.py selftest                     # 内置 mock P4 自测（无需硬件）
+  python agent_bridge.py ping                         # 探活
+  python agent_bridge.py mouse-move 60 -20            # 相对移动
+  python agent_bridge.py key-combo leftgui r          # Win+R
+  python agent_bridge.py text "hello world"           # 逐字符输入
+  python agent_bridge.py mouse-move 5 0 --repeat 100 --no-wait   # 连发
+  python agent_bridge.py screenshot shot.png --min-bytes 51200   # 全屏截图
+  python agent_bridge.py e2e-demo                     # 截屏->移动->截屏->差分
+
+退出码/exit: 0=OK 1=自测/断言失败 2=用法 3=传输 4=设备错误 5=超时 6=TCP未实现 130=中断
+
+注意 / note: 默认退出时会发 release_all（§6.4）。要跨进程按住键，请加 --no-release-on-exit。
+By default the bridge sends release_all on exit (§6.4); use --no-release-on-exit to hold keys across runs.
+exit=0
+
+### 2) agent_bridge.py --list-ports
+> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py --list-ports
+COM    型号/Model                                VID:PID     建议/Advice                         总线/Bus
+--------------------------------------------------------------------------------------------------------------
+COM4   Bluetooth 虚拟串口                          -           跳过：蓝牙虚拟口，不是开发板                    BTHENUM
+         friendly: 蓝牙链接上的标准串行 (COM4)
+COM5   Bluetooth 虚拟串口                          -           跳过：蓝牙虚拟口，不是开发板                    BTHENUM
+         friendly: 蓝牙链接上的标准串行 (COM5)
+--------------------------------------------------------------------------------------------------------------
+提示/Note: COM4, COM5 是蓝牙虚拟串口，开发板不在这里 / Bluetooth virtual ports, not the board.
+没有可自动识别的开发板串口 / no likely board port; 请用 --port 手动指定。
+
+共 2 个串口 / 2 port(s).  协议 §1: 115200 8N1, CH340C。
+exit=0
+
+### 3) agent_bridge.py selftest
+> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py selftest
+== agent_bridge selftest（内置 mock P4，无硬件 / no hardware required）==
+  解释器/interpreter : 3.12.14 (%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe)
+  Pillow            : 12.3.0  (唯一第三方依赖 / only 3rd-party dep)
+  pyserial          : 未安装（符合预期，本实现用 ctypes+Win32）
+  用例数/tests      : 39
+------------------------------------------------------------------------------
+[PASS] line_reader_discards_rom_garbage               §1            0.2 ms
+[PASS] line_reader_survives_split_frames              §1            0.2 ms
+[PASS] line_reader_drops_invalid_json_line            §1            0.1 ms
+[PASS] firmware_bad_json_returns_err                  §3.4          0.1 ms
+[PASS] firmware_drops_oversized_line                  §9.1          0.0 ms
+[PASS] client_refuses_oversized_frame                 §9.1          0.0 ms
+[PASS] ping_roundtrip_caps_and_t                      §2/§3.1       0.1 ms
+[PASS] status_reports_counters                        §3.1          0.2 ms
+[PASS] id_correlation_skips_stray_response            §2/§9.4       0.1 ms
+[PASS] out_of_order_responses_are_matched             §2            0.1 ms
+[PASS] timeout_raises_cleanly_not_hang                §2/§7       303.2 ms
+[PASS] unknown_cmd_error                              §3.4          0.1 ms
+[PASS] bad_key_reports_first_illegal_key              §3.2/§3.4     0.1 ms
+[PASS] bad_arg_type_range_missing                     §3.4          0.3 ms
+[PASS] key_slot_overflow_is_bad_arg                   §3.2          0.1 ms
+[PASS] unsupported_char_detail_is_0based              §9.2          0.1 ms
+[PASS] text_shift_rules_us_layout                     §4            0.1 ms
+[PASS] text_chunking_respects_512_and_chars           §9.1          3.0 ms
+[PASS] key_down_up_and_state_roundtrip                §3.2          0.2 ms
+[PASS] mouse_move_and_scroll_split_at_127             §3.3          0.1 ms
+[PASS] mouse_btn_and_click                            §3.3          0.1 ms
+[PASS] set_safety_timeout_and_range                   §3.1/§9.4     0.2 ms
+[PASS] keepalive_refreshes_and_replies                §3.1          0.1 ms
+[PASS] not_mounted_boundary                           §9.3          0.3 ms
+[PASS] safety_timeout_auto_releases_and_events        §6.1         58.0 ms
+[PASS] safety_timeout_zero_disables                   §3.1         62.3 ms
+[PASS] context_manager_exit_sends_release_all         §6.4          0.1 ms
+[PASS] atexit_safety_cleanup_path                     §6.4          0.1 ms
+[PASS] release_on_close_false_keeps_keys_held         §6.4          0.1 ms
+[PASS] disconnect_mid_session_no_uncaught             §6.4          0.2 ms
+[PASS] missing_port_is_clean_transport_error          §6.4          0.1 ms
+[PASS] port_listing_never_crashes                     §1            9.2 ms
+[PASS] tcp_transport_reports_unimplemented            §1            0.0 ms
+[PASS] no_wait_burst_throughput                       §7           24.7 ms
+[PASS] rate_limited_error_path                        §3.4          1.5 ms
+[PASS] verify_module_pixel_diff                       交付物          24.3 ms
+[PASS] screenshot_module_available                    交付物           3.2 ms
+[PASS] cli_exit_codes_and_mock_run                    CLI        1563.3 ms
+[PASS] dependency_audit_stdlib_plus_pillow            验收3          64.2 ms
+------------------------------------------------------------------------------
+连发吞吐实测 / burst throughput (loopback): 86217 条/秒  (帧 35B；115200 8N1 理论上限 329 条/秒)
+结果 / result: 39/39 通过 (passed), 0 失败 (failed), 耗时 2120 ms
+== SELFTEST PASS ==
+exit=0
+
+### 4) agent_bridge.py screenshot evidence/screenshot_acceptance.png --min-bytes 51200
+> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py screenshot %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\screenshot_acceptance.png --min-bytes 51200
+SCREENSHOT OK  %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\screenshot_acceptance.png
+  尺寸/size : 2560 x 1440
+  文件/bytes: 990688 B (967.5 KiB)
+  DPI 模式  : per-monitor-aware  (grabbed 2560x1440)
+  屏幕校验  : matches primary
+exit=0
+
+文件: %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\screenshot_acceptance.png
+字节数: 990688 bytes (967.5 KiB)
+
+### 5) eyes.py --info
+> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\eyes.py --info
+主屏/primary      : (2560, 1440)
+虚拟桌面/virtual  : (2560, 1440) @ (0, 0)
+DPI 模式          : per-monitor-aware
+exit=0
+
+### 6) dependency audit (AST/import)
+> $PY %USERPROFILE%\AppData\Local\Temp\dsh_dep_audit.py
+python                      : 3.12.14
+Pillow                      : 12.3.0
+third-party imported by pc/ : ['PIL']
+pyserial(serial) installed? : False
+numpy imported?             : False
+RESULT: 除 Pillow 外零第三方依赖 / stdlib + Pillow only -> OK
+exit=0
+
+### 7) agent_bridge.py e2e-demo --transport mock --outdir evidence --dx 120
+> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py e2e-demo --transport mock --outdir %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence --dx 120
+python.exe : [info] mock 传输：仅协议回环，不驱动真实 HID / mock: protocol loopback only
+所在位置 行:7 字符: 8
++   $o = & $py @argv 2>&1 | Out-String; $c = $LASTEXITCODE
++        ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([info] mock 传输：...l loopback only:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[事件/evt] boot t=0 {'fw': 'P4-HID-1.0', 'proto': '1.0'}
+[事件/evt] hid_mounted t=0
+[1/5] ping OK  fw=P4-HID-1.0  proto=1.0  host_mounted=True  caps=hid_keyboard,hid_mouse,uart
+[2/5] 截屏 before / shot before: %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png  2560x1440  999166 B
+[3/5] mouse_move dx=120 dy=0 -> {'ok': True, 'id': 2, 't': 202, 'dx': 120, 'dy': 0, 'reports': 1}
+[4/5] 截屏 after / shot after:  %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png  2560x1440  991369 B
+[5/5] 差分 / diff:
+      [A] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png  2560x1440
+      [B] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png  2560x1440
+      比较区域/region : 全图 (full image)
+      变化像素/changed: 5763 / 3686400
+      变化比例/ratio  : 0.1563%
+      差异阈值/thresh : >0 (每通道)
+      包围盒/bbox     : (505, 197, 1872, 913)
+      判定/verdict    : 有变化 / CHANGE DETECTED
+结论/conclusion: mock 传输只做协议回环、不驱动真实 HID；因此差分检测到的任何变化都来自桌面自身（光标/终端刷新），不能当作 HID 生效的证据。
+      本结果证明「截屏 -> 协议编码发送 -> mock 回应 -> 再截屏 -> 差分」链路通畅 / mock loopback: link OK, screen changes are desktop-local.
+exit=0
+
+### 8) agent_bridge.py verify evidence/e2e_before.png evidence/e2e_after.png
+> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py verify %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png
+[A] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png  2560x1440
+[B] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png  2560x1440
+比较区域/region : 全图 (full image)
+变化像素/changed: 5763 / 3686400
+变化比例/ratio  : 0.1563%
+差异阈值/thresh : >0 (每通道)
+包围盒/bbox     : (505, 197, 1872, 913)
+判定/verdict    : 有变化 / CHANGE DETECTED
+exit=0
+
+### 9) CLI 错误路径检查 (临时脚本)
+> $PY %USERPROFILE%\AppData\Local\Temp\dsh_cli_checks.py
+PASS text 非 ASCII -> exit 4 + detail=1                rc=4 (want 4)
+PASS mouse-move 越界 -> exit 4                          rc=4 (want 4)
+PASS key-combo 非法键名 -> exit 4                         rc=4 (want 4)
+PASS set 越界 -> exit 4 (本地拦截)                          rc=4 (want 4)
+PASS 用法错误 -> exit 2                                   rc=2 (want 2)
+PASS ping --json 输出可解析                                rc=0 (want 0)
+PASS ping --json 内容是合法响应对象                            {'ok': True, 'id': 1, 't': 0, 'pong': True, 'fw': 'P4-HID-1.0', 'proto': '1.0', 'uptime_ms': 0, 'host_mounted': True, 'caps': ['hid_keyboard', 'hid_mouse', 'uart']}
+PASS --list-keys --json 表正确 (leftgui=8, f24=0x73)     rc=0
+PASS text 长文本分块 (1000 字符)                             rc=0 (want 0)
+
+CLI CHECKS: ALL PASS
+exit=0

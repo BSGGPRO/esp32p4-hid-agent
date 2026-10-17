@@ -1,0 +1,13 @@
+# pc/ 桥接依赖 / bridge dependencies
+#
+# 设计目标（task-2 硬约束）：除 Pillow 外只用 Python 标准库。
+#   * 串口：ctypes 直调 Win32（kernel32 CreateFileW/SetCommState/ReadFile/WriteFile），
+#           **不依赖 pyserial**（本机也没有 pyserial）。
+#   * 截图：Pillow 的 ImageGrab（本机已装 12.3.0）。
+#
+# 安装 / install（仅截图需要；协议/串口部分零安装也能跑）：
+#   <python.exe> -m pip install Pillow
+#
+# 无网络时的替代 / offline alternative:
+#   若 Pillow 不可用，除 screenshot / e2e-demo / verify 之外的全部命令仍可用。
+Pillow>=9.0
