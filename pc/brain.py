@@ -195,18 +195,44 @@ def clip_set(text: str) -> bool:
 # --------------------------------------------------------------------------- #
 # 大脑
 # --------------------------------------------------------------------------- #
-def _step_for(err: int) -> int:
-    """把误差换算成这一次该发给板子的相对位移。
+# 实测增益表（tools/calibrate-pointer.py 测得，1280@2560x1440 125% 缩放）：
+# 请求位移 m -> 光标实际位移 gain(m) * m。加速曲线在 m>=12 后稳定，m<=8 有量化噪声。
+_GAIN_TABLE = [
+    (1, 1.00), (3, 0.90), (5, 0.90), (8, 1.00), (12, 1.28), (16, 1.67),
+    (20, 1.98), (24, 2.22), (30, 2.46), (40, 2.67), (60, 2.91),
+    (80, 3.02), (120, 3.13), (200, 3.09),
+]
 
-    Windows「提高指针精确度」对小位移基本 1:1、对大位移放大到 2~3 倍，
-    所以大误差时按 1/3 走（放大后正好吃掉大部分），小误差时逐像素精修。
+
+def _gain(mag: float) -> float:
+    """按实测表线性插值求增益；超出范围用端点值。"""
+    if mag <= _GAIN_TABLE[0][0]:
+        return _GAIN_TABLE[0][1]
+    if mag >= _GAIN_TABLE[-1][0]:
+        return _GAIN_TABLE[-1][1]
+    for i in range(len(_GAIN_TABLE) - 1):
+        m0, g0 = _GAIN_TABLE[i]
+        m1, g1 = _GAIN_TABLE[i + 1]
+        if m0 <= mag <= m1:
+            t = (mag - m0) / (m1 - m0)
+            return g0 + (g1 - g0) * t
+    return _GAIN_TABLE[-1][1]
+
+
+def _step_for(err: int) -> int:
+    """把误差换算成本次该发给板子的相对位移。
+
+    Windows「提高指针精确度」把相对位移按速度非线性放大，所以：
+      大误差 -> 按实测增益反推，一步吃掉大半，且不过冲；
+      小误差 -> 1:1 逐像素精修（此区间增益≈1）。
     """
     a = abs(err)
     if a == 0:
         return 0
-    if a <= 4:
+    if a <= 3:
         return err                      # 1:1 精修区
-    mag = max(5, min(120, a // 3))      # 加速区，防过冲
+    mag = int(round(a / _gain(a)))
+    mag = max(1, min(200, mag))
     return mag if err > 0 else -mag
 
 
