@@ -664,9 +664,17 @@ def main(argv=None) -> int:
     chat = find_chat()
     print("[1] 画图窗口: %r rect=%s  %dx%d" % (
         paint["title"], paint["rect"], *rect_size(paint["rect"])))
+    window_check = {"paint_title": paint["title"], "paint_rect": list(paint["rect"]),
+                    "chat_title": None, "chat_rect": None,
+                    "overlap_px2": None, "overlap_ratio_of_chat": None,
+                    "max_allowed_ratio": args.overlap_max, "moved": False}
     if chat:
         ov = overlap_area(paint["rect"], chat["rect"])
         chat_area = max(1, rect_size(chat["rect"])[0] * rect_size(chat["rect"])[1])
+        window_check.update({"chat_title": chat["title"],
+                             "chat_rect": list(chat["rect"]),
+                             "overlap_px2": ov,
+                             "overlap_ratio_of_chat": round(ov / chat_area, 4)})
         print("    聊天窗口: %r rect=%s 重叠=%d px² (%.1f%% of chat)" % (
             chat["title"], chat["rect"], ov, 100.0 * ov / chat_area))
     else:
@@ -687,6 +695,8 @@ def main(argv=None) -> int:
     if chat and not args.no_move:
         mv = minimal_move_off_chat(paint, chat, args.overlap_max)
         print("[2] 遮挡处理:", json.dumps(mv, ensure_ascii=False))
+        window_check["move_decision"] = mv
+        window_check["moved"] = bool(mv.get("moved"))
         if mv.get("after_rect"):
             paint = find_by_hwnd(int(paint["hwnd"])) or paint
         if not focus_hwnd(int(paint["hwnd"])):
@@ -694,6 +704,7 @@ def main(argv=None) -> int:
             return 3
     else:
         print("[2] 未移动窗口（--no-move 或没有聊天窗口）")
+    window_check["final_rect"] = list(paint["rect"])
     print("    实际 rect:", paint["rect"])
 
     # ---- 3) 截屏 + 找画布 ----
@@ -826,6 +837,7 @@ def main(argv=None) -> int:
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
         "window": {"title": paint["title"], "rect": paint["rect"], "hwnd": int(paint["hwnd"])},
         "chat_rect": chat["rect"] if chat else None,
+        "window_check": window_check,
         "canvas": cv,
         "before_ink": before_ink,
         "after_ink": ink_after,
