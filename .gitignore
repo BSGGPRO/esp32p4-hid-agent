@@ -9,3 +9,9 @@ __pycache__/
 *.pyc
 # local evidence scratch
 *.log.tmp
+# 大脑层运行时产物（截图/临时计划/等待帧）
+pc/_*.json
+pc/_wait_*.png
+pc/shot.png
+e2e_before.png
+e2e_after.png

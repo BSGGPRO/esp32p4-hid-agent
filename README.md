@@ -66,6 +66,7 @@ esp32p4-hid-agent/
 ├─ docs/
 │  ├─ protocol.md          # ★ 固件↔PC 唯一接口契约（Lead 维护，v1.1）
 │  ├─ hardware-facts.md    # 硬件/烧录事实取证（每条带证据等级）
+│  ├─ brain-usage.md       # ★ 大脑层：动作清单/绝对定位原理/真机演示/已知坑
 │  └─ bringup-runbook.md   # 上电·烧录·验收手册（含故障排查）
 ├─ firmware/               # ESP-IDF v5.5.6 / esp32p4 / esp_tinyusb v2
 │  ├─ main/{app_main,uart_link,keymap,hid_device,cmd_protocol}.c
@@ -73,6 +74,7 @@ esp32p4-hid-agent/
 │  └─ README.md            # size 报告 + cmd→函数表
 ├─ pc/                     # 零依赖 Python 桥（仅 Pillow）
 │  ├─ agent_bridge.py      # CLI + 协议客户端
+│  ├─ brain.py             # ★ 大脑层：look/point/click/type/key/read_text/run 的原子动作编排
 │  ├─ transport_uart.py    # ctypes 直调 Win32 串口（无 pyserial）
 │  ├─ eyes.py / verify.py  # 截屏 / 像素差分
 │  ├─ mock_p4.py / selftest.py
@@ -84,6 +86,36 @@ esp32p4-hid-agent/
    ├─ check-hid-descriptor.py   # 从 ELF 里解析 HID report descriptor 并校验报告布局
    └─ flash-and-verify.ps1      # 一键烧录+验收
 ```
+
+---
+
+## 大脑层（模型怎么真的操作这台电脑）
+
+`pc/brain.py` 是"眼 + 手"的可编排封装，一层命令覆盖看→做→验：
+
+```powershell
+$PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe"
+
+& $PY pc\brain.py --port COM7 look                     # 截屏 + 前台窗口/可见窗口/光标
+& $PY pc\brain.py --port COM7 point 1200 400           # 绝对坐标（相对移动闭环收敛）
+& $PY pc\brain.py --port COM7 click 1200 400 --count 2 # 定位后双击
+& $PY pc\brain.py --port COM7 type "hello" --cps 20    # HID 打字
+& $PY pc\brain.py --port COM7 key ctrl+s               # 组合键（ctrl/alt/shift/win 自动归一）
+& $PY pc\brain.py wins                                 # 列窗口（不占串口）
+& $PY pc\brain.py --json --port COM7 run --script plan.json   # 一次连接跑整组动作
+```
+
+关键能力与实测：
+
+| 能力 | 做法 | 实测 |
+|---|---|---|
+| 绝对坐标鼠标 | 读 `GetCursorPos()` 做反馈，位移仍由板子发 | `(822,820)→(2000,1000)` 5 次迭代命中，误差 0 |
+| 文本读屏 | `ctrl+a`→`ctrl+c`→读剪贴板（读完还原用户剪贴板） | 运行框内读回成功；Win11 记事本内不可靠 |
+| 键名归一 | `ctrl/alt/shift/win` → `leftctrl/leftalt/leftshift/leftgui` | 上层只写 `ctrl+s` |
+| 失败即停 | 每步返回 `{ok,...}`，默认中止 | 演示中靠它拦住了往 README.md 灌字 |
+
+**诚实前提**：`look` 产出 PNG，**没有图像输入能力的模型用不上**，这类模型应走 `wins` + `read_text` + `diff` 的文本通道。
+细节、动作全表与真机演示记录见 [docs/brain-usage.md](docs/brain-usage.md)。
 
 ---
 
@@ -114,7 +146,9 @@ esp32p4-hid-agent/
 5. **`key_tap` 的 ack 含 hold_ms**：默认 30 ms，所以 ack ≈ 42 ms 是设计使然；测链路延迟请用 `ping`/`mouse_move`。
 6. **只插一个口会"半身不遂"**：UART 口=脑（指令），高速口=手（HID）。`host_mounted=False` 就是没插高速口。
 7. **首次开串口会复位板子一次**：CH340 的 DTR/RTS 抖动导致，PC 侧已对只读命令补发一次，会动键鼠的命令绝不重发。
-8. **仅图片可验证项**：三个 Type-C 口的一一对应、1 A 保险丝、双口供电接法、下载模式的物理实现方式 —— 本 AI 无视觉能力，未复核原理图，见 hardware-facts §2/§6.2/§1.5。
+8. **大脑层还不能闭环自纠**：`read_text` 在部分应用（Win11 记事本）读不全，`ctrl+a` 不选中；只靠 `wins`+`read_text` 的文本模型拿不到控件级信息，需要接 UI Automation 或加 OCR。
+9. **Win+R 自动补全**：打 `notepad` 可能被补成上次的完整命令（曾差点把字打进 README.md）。任何盲打前必须 `wins` 验证前台标题。
+10. **仅图片可验证项**：三个 Type-C 口的一一对应、1 A 保险丝、双口供电接法、下载模式的物理实现方式 —— 本 AI 无视觉能力，未复核原理图，见 hardware-facts §2/§6.2/§1.5。
 
 ---
 
