@@ -1335,7 +1335,7 @@ class HubHandler(BaseHTTPRequestHandler):
                 pass
 
     # -- 网页按钮：POST /api/cmd（白名单命令）-----------------------------
-    CMD_WHITELIST = {"ping", "stats", "set", "sd_remount", "sd_test"}
+    CMD_WHITELIST = {"ping", "stats", "set", "sd_remount", "sd_test", "mouse_move"}
 
     def do_POST(self) -> None:
         path = self.path.split("?", 1)[0]
@@ -1367,6 +1367,17 @@ class HubHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"ok": False, "err": "cmd_not_allowed", "cmd": cmd,
                                   "allowed": sorted(self.CMD_WHITELIST)})
             return
+        if cmd == "mouse_move":
+            # 安全护栏：只允许 dx=dy=0 的无位移报文（覆盖 HID 发送路径，但不动用户光标）
+            try:
+                dx = int(payload.get("dx") or 0)
+                dy = int(payload.get("dy") or 0)
+            except (TypeError, ValueError):
+                dx, dy = 1, 1
+            if dx != 0 or dy != 0:
+                self._send_json(400, {"ok": False, "err": "mouse_move_blocked",
+                                      "detail": "只允许 dx=0,dy=0，避免干扰用户光标"})
+                return
         board = HubHandler.board
         if board is None:
             self._send_json(503, {"ok": False, "err": "board_offline"})
@@ -1630,3 +1641,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
