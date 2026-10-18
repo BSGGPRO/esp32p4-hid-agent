@@ -1,0 +1,7 @@
+# Cline 接入文件（esp32p4-hid-agent）——只放指针，说明书不复制。
+板子 = 这台 Windows 上的真实 USB 键鼠；完整说明书（唯一真相）：docs/ai-controller.md。
+红线：禁止改固件（firmware/ 只读：不编译、不烧录、不改源码）；不动用户窗口（只 restore/focus）；
+全屏应用不发键鼠（除非 "force": true）；不可逆动作（删除/发送/支付/关机）先问人；别猜坐标，先 ocr/find/ui。
+用法一：tools/mcp_server.py（stdio MCP，10 个 board_* 工具，配置见 .mcp.json）。
+用法二：python tools/connector.py --selfcheck；或 echo '<作业 JSON>' | python tools/connector.py。
+出错看 docs/ai-controller.md 第 7 节「出错怎么办」。

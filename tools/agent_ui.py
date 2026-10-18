@@ -11,6 +11,7 @@
   [自检]             屏幕/OCR/板子/指针/视觉 五项
   [服务状态]         hub / 板子 / 视觉服务在不在
   [看说明书]         就在窗口里读
+  [给 AI 用…]        选一个 AI，复制/保存它要的配置或指令
   [运行作业]         粘一段 JSON 作业，用板子执行
 
 执行逻辑一行没重写：全部走 tools/connector.py。
@@ -44,6 +45,20 @@ FG, SUB = "#e8eaf0", "#8b93a7"
 FONT = ("Microsoft YaHei UI", 10)
 MONO = ("Consolas", 10)
 
+# 「给 AI 用」面板：只放一层薄接入，说明书全文永远在 docs/ai-controller.md 那一份。
+# (显示名, 类型, 怎么用)；类型决定生成什么：mcp = 可粘的 JSON，cmd = 自然语言指令，
+# chat = 只能喂说明书。
+AI_TARGETS = (
+    ("Claude Code", "mcp", "粘进项目根的 .mcp.json（或 claude mcp add 加同一段）。"),
+    ("Codex", "cmd", "在仓库根目录打开它，把这段贴进对话框，它会读 AGENTS.md。"),
+    ("Cursor", "cmd", "贴进对话框；Cursor 也会读 AGENTS.md。"),
+    ("Gemini CLI", "mcp", "粘进 .gemini/settings.json（项目或用户目录）的 mcpServers。"),
+    ("VS Code Copilot", "mcp", "粘进仓库的 .vscode/mcp.json。"),
+    ("Windsurf", "mcp", "粘进 mcp_config.json 的 mcpServers。"),
+    ("Cline", "mcp", "粘进 Cline 的 cline_mcp_settings.json。"),
+    ("豆包（聊天类）", "chat", "它不能跑命令：把说明书存下来拖进聊天框。"),
+)
+
 _conn = None          # 懒加载：connector 会连带导入 Pillow 等，窗口先出来更重要
 
 
@@ -62,14 +77,13 @@ def manual_text() -> str:
     return raw.decode("utf-8-sig")
 
 
-def save_manual(path: str) -> int:
-    """把说明书写成 UTF-8（无 BOM、统一 LF）。返回写入字节数。
+def _write_text(path: str, text: str) -> int:
+    """UTF-8（无 BOM）、统一 LF 落盘，返回字节数。
 
-    父目录不存在就建；建不出来或写不进去，抛带中文说明的 RuntimeError——
-    绝不静默失败，否则用户以为存好了其实没有。
+    父目录不存在就建；建不出来或写不进去，抛带中文说明的 RuntimeError——绝不静默失败。
+    说明书和「给 AI 用」面板共用这一份落盘逻辑。
     """
-    text = manual_text().replace("\r\n", "\n").replace("\r", "\n")
-    data = text.encode("utf-8")
+    data = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
     path = os.path.abspath(path)
     parent = os.path.dirname(path)
     if parent and not os.path.isdir(parent):
@@ -83,6 +97,63 @@ def save_manual(path: str) -> int:
     except OSError as e:
         raise RuntimeError("保存失败：%s\n目标：%s" % (e, path))
     return len(data)
+
+
+def save_manual(path: str) -> int:
+    """把说明书写成 UTF-8（无 BOM、统一 LF）。返回写入字节数。"""
+    return _write_text(path, manual_text())
+
+
+def mcp_server_path() -> str:
+    """MCP 服务器的真实绝对路径；找不到（EXE 被拷到别处、身边没有仓库）返回空串。
+
+    打包后 sys._MEIPASS 是**临时解压目录**，退出即删——绝不能把那里的路径交给客户端。
+    所以在冻结状态下依次找：EXE 旁边 → EXE 旁边的 esp32p4-hid-agent/ → 当前目录。
+    """
+    if not getattr(sys, "frozen", False):
+        p = os.path.join(ROOT, "tools", "mcp_server.py")
+        return p if os.path.isfile(p) else ""
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    for base in (exe_dir, os.path.join(exe_dir, "esp32p4-hid-agent"), os.getcwd()):
+        p = os.path.join(base, "tools", "mcp_server.py")
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def ai_payload(name: str) -> str:
+    """给指定 AI 用的那段：MCP 类是可粘的 JSON，命令类/聊天类是中文指令。"""
+    target = next((t for t in AI_TARGETS if t[0] == name), AI_TARGETS[0])
+    kind = target[1]
+    if kind == "mcp":
+        server_py = mcp_server_path()
+        if not server_py:                 # 身边没有仓库：不能给一段假路径
+            return ("MCP 需要一个真实的 tools/mcp_server.py 路径，这个窗口旁边没有仓库。\n\n"
+                    "两种办法：\n"
+                    "1. 把整个仓库（或用 git clone / 下载的压缩包）放在旁边，"
+                    "从仓库里重新打开这个程序，这一段就会自动填好；\n"
+                    "2. 不用 MCP，改用「命令类」那段（Codex / Cursor 的写法）："
+                    "让 AI 在仓库根目录里跑 python tools/connector.py。\n\n"
+                    "窗口版本身不受影响：这些按钮都能用。")
+        server = {"command": "python", "args": [server_py]}
+        if not getattr(sys, "frozen", False):
+            # 源码运行时用"正在跑这个窗口的那个 python"——它一定装了依赖，
+            # 也不受 PATH 里 python 是 Microsoft Store 占位符的影响。
+            server["command"] = sys.executable
+        key = "esp32p4-hid-board"
+        if name == "VS Code Copilot":       # VS Code 的格式是 servers，不是 mcpServers
+            cfg = {"servers": {key: {"type": "stdio", **server}}}
+        else:
+            cfg = {"mcpServers": {key: server}}
+        return json.dumps(cfg, ensure_ascii=False, indent=2)
+    if kind == "chat":
+        return ("把 docs/ai-controller.md 拖进聊天框，然后让它按说明书干活。\n\n"
+                "它只能出主意、不能直接按键：要动手时把步骤发回来，"
+                "在本窗口的「运行作业」里执行。")
+    return ("读 AGENTS.md，按里面的规矩用 python tools/connector.py 操作这块板子；"
+            "禁止改 firmware/。\n\n"
+            "先跑 python tools/agent.py --services 确认板子和视觉服务在不在，"
+            "再一步一核对地做；不确定就先问人。")
 
 
 def log_path() -> str:
@@ -219,6 +290,7 @@ class App(tk.Tk):
         self.after(120, self._drain)
         self._log("就绪。板子是手和眼，这里是遥控器。")
         self._log("要给别的 AI 用：点「保存 AI 说明书…」，把存出来的 .md 拖给它。")
+        self._log("给 Codex / Claude Code / 豆包这类 AI 接入：点顶部「给 AI 用…」，复制或存成文件。")
         self._log_busy_hint()
 
     def report_callback_exception(self, exc, val, tb) -> None:
@@ -257,8 +329,10 @@ class App(tk.Tk):
         self.btn_check = tk.Button(bar, text="自检", width=8, font=FONT, command=self.on_selfcheck)
         self.btn_svc = tk.Button(bar, text="服务状态", width=10, font=FONT, command=self.on_services)
         self.btn_read = tk.Button(bar, text="看说明书", width=10, font=FONT, command=self.on_read_manual)
+        self.btn_ai = tk.Button(bar, text="给 AI 用…", width=10, font=FONT,
+                                command=self.on_ai_panel)
         for i, b in enumerate((self.btn_save, self.btn_copy, self.btn_check,
-                               self.btn_svc, self.btn_read)):
+                               self.btn_svc, self.btn_read, self.btn_ai)):
             b.grid(row=0, column=i, padx=(0, 6))
 
         tk.Label(bar, text="保存出来的 .md 可以直接拖给 Codex / 豆包 / Gemini 用",
@@ -392,6 +466,132 @@ class App(tk.Tk):
             return up, services_text(s)
         self._bg("查服务状态", work)
 
+    def on_ai_panel(self) -> tk.Toplevel:
+        """把控制器交给别的 AI：选一个，复制/存下它要的配置或指令。
+
+        子窗口不进 mainloop、不最大化也不动别的窗口；重复点只把已有的抬到前面。
+        """
+        old = getattr(self, "_ai_win", None)
+        if old is not None:
+            try:
+                if old.winfo_exists():
+                    old.deiconify()
+                    old.lift()
+                    return old
+            except tk.TclError:
+                pass
+
+        win = tk.Toplevel(self)
+        win.title("给别的 AI 用")
+        win.geometry("820x620")
+        win.resizable(False, False)
+        win.configure(bg=BG)
+        win.transient(self)               # 跟着主窗口，不抢别的程序
+        self._ai_win = win
+
+        body = tk.Frame(win, bg=BG, padx=16, pady=12)
+        body.pack(fill=tk.BOTH, expand=True)
+        tk.Label(body, text="把控制器交给别的 AI：选一个，复制走这一段（或存成文件）。",
+                 fg=FG, bg=BG, font=FONT, anchor="w").pack(fill=tk.X)
+        tk.Label(body, text="MCP 类粘进它的 MCP 配置；命令类直接贴进对话框；"
+                            "聊天类把说明书拖进去。",
+                 fg=SUB, bg=BG, font=FONT, anchor="w", justify=tk.LEFT,
+                 wraplength=760).pack(fill=tk.X, pady=(4, 10))
+
+        pick = tk.Frame(body, bg=BG)
+        pick.pack(fill=tk.X)
+        tk.Label(pick, text="给谁用：", fg=FG, bg=BG, font=FONT).pack(side=tk.LEFT)
+        names = [t[0] for t in AI_TARGETS]
+        var = tk.StringVar(master=win, value=names[0])
+        menu = tk.OptionMenu(pick, var, *names)
+        menu.configure(font=FONT, bg=BG2, fg=FG, activebackground=BG2,
+                       activeforeground=FG, highlightthickness=0, bd=0)
+        menu["menu"].configure(font=FONT, bg=BG2, fg=FG,
+                               activebackground=SUB, activeforeground=BG)
+        menu.pack(side=tk.LEFT)
+
+        hint = tk.Label(body, text="", fg=SUB, bg=BG, font=FONT, anchor="w",
+                        justify=tk.LEFT, wraplength=760)
+        hint.pack(fill=tk.X, pady=(6, 8))
+
+        box = scrolledtext.ScrolledText(body, height=18, width=1, wrap=tk.WORD,
+                                        font=MONO, bg=BG2, fg=FG, insertbackground=FG,
+                                        relief=tk.FLAT, state=tk.DISABLED)
+        box.pack(fill=tk.BOTH, expand=True)
+
+        status = tk.Label(body, text="", fg=SUB, bg=BG, font=FONT, anchor="w",
+                          justify=tk.LEFT, wraplength=760)
+        hints = {t[0]: t[2] for t in AI_TARGETS}
+        kinds = {t[0]: t[1] for t in AI_TARGETS}
+
+        def current_text() -> str:
+            return box.get("1.0", tk.END).strip("\n")
+
+        def show(*_) -> None:
+            box.configure(state=tk.NORMAL)
+            box.delete("1.0", tk.END)
+            box.insert("1.0", ai_payload(var.get()))
+            box.configure(state=tk.DISABLED)
+            hint.configure(text="怎么用：" + hints.get(var.get(), ""))
+            status.configure(text="")
+
+        def copy_it() -> None:
+            if self._busy:
+                status.configure(text="主窗口还有动作在跑，等它结束再复制。")
+                return
+            text = current_text()
+            if not text:
+                status.configure(text="这段是空的，先选一个 AI。")
+                return
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(text)
+                self.update_idletasks()
+            except Exception as e:                       # noqa: BLE001
+                status.configure(text="复制失败：%s" % e)
+                return
+            status.configure(text="已复制 %d 字符，去粘给 %s。" % (len(text), var.get()))
+            self._log("已复制给 %s 用的内容（%d 字符）。" % (var.get(), len(text)), "ok")
+
+        def save_it() -> None:
+            if self._busy:
+                status.configure(text="主窗口还有动作在跑，等它结束再保存。")
+                return
+            text = current_text()
+            ext = ".json" if kinds.get(var.get()) == "mcp" else ".txt"
+            path = filedialog.asksaveasfilename(
+                parent=win, title="保存给 %s 用的内容" % var.get(),
+                initialfile="给-AI-用" + ext, defaultextension=ext,
+                filetypes=[("JSON 配置", "*.json"), ("全部文件", "*.*")] if ext == ".json"
+                          else [("文本文件", "*.txt"), ("全部文件", "*.*")])
+            if not path:
+                status.configure(text="已取消保存。")
+                return
+            try:
+                n = _write_text(path, text)
+            except Exception as e:                       # noqa: BLE001
+                messagebox.showerror("保存失败", str(e), parent=win)
+                status.configure(text=str(e))
+                return
+            status.configure(text="已保存：%s（%d 字节，UTF-8 无 BOM）" % (path, n))
+            self._log("给 %s 用的内容已保存：%s（%d 字节）" % (var.get(), path, n), "ok")
+
+        btns = tk.Frame(body, bg=BG)
+        btns.pack(fill=tk.X, pady=(8, 0))
+        tk.Button(btns, text="复制这段", width=12, font=FONT,
+                  command=copy_it).pack(side=tk.LEFT)
+        tk.Button(btns, text="保存成文件", width=12, font=FONT,
+                  command=save_it).pack(side=tk.LEFT, padx=(8, 0))
+        status.pack(fill=tk.X, pady=(8, 0))
+
+        var.trace_add("write", show)
+        show()
+
+        # 无窗口自测/排障用：直接拿到控件和动作，不必点按钮
+        win.ai_var, win.ai_text, win.ai_status = var, box, status
+        win.ai_copy, win.ai_save = copy_it, save_it
+        return win
+
     def on_read_manual(self) -> None:
         try:
             text = manual_text()
@@ -424,9 +624,19 @@ def windowless_selftest() -> dict:
         try:
             a.withdraw()
             return [w for w in ("btn_save", "btn_copy", "btn_check", "btn_svc",
-                                "btn_read", "btn_run") if hasattr(a, w)]
+                                "btn_read", "btn_run", "btn_ai") if hasattr(a, w)]
         finally:
             a.destroy()
+
+    def probe_ai_payloads():
+        # 打包后 _MEIPASS 是临时解压目录，退出即删：给客户端的路径绝不能指向那里
+        p = mcp_server_path()
+        for t in AI_TARGETS:
+            text = ai_payload(t[0])
+            assert "_MEI" not in text, "%s 的配置指向了临时解压目录" % t[0]
+        if p:
+            assert os.path.isfile(p), "给的 mcp_server.py 不存在：%s" % p
+        return "%d 个目标%s" % (len(AI_TARGETS), "，仓库路径可用" if p else "，身边无仓库（会给出替代说明）")
 
     for name, fn in (
         ("说明书可读（字符数）", lambda: len(manual_text())),
@@ -434,6 +644,7 @@ def windowless_selftest() -> dict:
         ("保存说明书（字节数）", lambda: save_manual(tmp)),
         ("能力清单 op_count", lambda: json.loads(caps_text())["op_count"]),
         ("窗口能构建（控件名）", probe_app),
+        ("给 AI 用：不出现临时目录路径", probe_ai_payloads),
     ):
         try:
             out[name] = {"ok": True, "value": fn()}

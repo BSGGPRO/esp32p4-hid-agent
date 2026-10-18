@@ -928,6 +928,14 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                 elif op == "ocr":
                     rows = ocr(st["rect"])
                     rec["rows"] = [r["text"] for r in rows]
+                    # 文字和坐标一起给：只有 rows 的话，想点某一行的 AI 只能猜坐标
+                    rec["boxes"] = [
+                        {"text": r["text"],
+                         "x": int(r["x"]), "y": int(r["y"]),
+                         "w": int(r["w"]), "h": int(r["h"]),
+                         "cx": int(r["x"] + r["w"] / 2),
+                         "cy": int(r["y"] + r["h"] / 2)}
+                        for r in rows]
                     if st.get("as"):
                         vars[st["as"]] = rows
 
@@ -1098,7 +1106,27 @@ def _is_disconnect(err: str) -> bool:
     return "portdisconnected" in e or "10053" in e or "10054" in e
 
 
+def _init_stdio() -> None:
+    """中文 Windows 的 stdout 是 cp936：OCR 读到的中文打出去就变乱码，AI 读到的是问号。
+
+    管道输出（AI/脚本读它）统一 UTF-8；终端输出保留控制台编码，只把编不了的字符换成 ?。
+    """
+    for s in (sys.stdout, sys.stderr):
+        if s is None:
+            continue
+        try:
+            tty = s.isatty()
+        except Exception:  # noqa: BLE001
+            tty = False
+        try:
+            s.reconfigure(encoding=(s.encoding or "utf-8") if tty else "utf-8",
+                          errors="replace")
+        except Exception:  # noqa: BLE001 — 老 Python / 被重定向的流，改了也不亏
+            pass
+
+
 def main() -> int:
+    _init_stdio()
     if "--selfcheck" in sys.argv:
         out = selfcheck(os.environ.get("CONNECTOR_TRANSPORT", "tcp"))
         print(json.dumps(out, ensure_ascii=False, indent=2))

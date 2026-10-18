@@ -147,6 +147,24 @@ if manual_path.exists():
 else:
     check("docs/ai-controller.md 存在", False, "打包说明书要用它")
 
+# connector 的 stdout 必须是 UTF-8：AI/脚本按 UTF-8 读，cp936 的中文会变成问号（中文界面等于失明）
+import os  # noqa: E402
+import subprocess  # noqa: E402
+
+try:
+    p = subprocess.run([sys.executable, str(ROOT / "tools" / "connector.py")],
+                       input=b"", capture_output=True, timeout=60,
+                       env=dict(os.environ, PYTHONIOENCODING="cp936", PYTHONUTF8="0"))
+    try:
+        txt = p.stdout.decode("utf-8")
+        ok_utf8 = "没有作业" in txt
+    except UnicodeDecodeError:
+        ok_utf8 = False
+    check("connector 输出是 UTF-8（不是 cp936）", ok_utf8,
+          "stdout 前 60 字节: %r" % p.stdout[:60])
+except Exception as e:  # noqa: BLE001
+    check("connector 输出是 UTF-8（不是 cp936）", False, "%s: %s" % (type(e).__name__, e))
+
 print("-" * 60)
 if failures:
     print("失败 %d 项: %s" % (len(failures), ", ".join(failures)))

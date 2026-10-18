@@ -64,6 +64,24 @@ type job.json | esp32p4-agent.exe
 Drop it in front of any agent that can run commands (Codex, Claude Code, …) and `--manual` teaches
 it everything. A text-only chat model reads [docs/ai-controller.md](docs/ai-controller.md) instead.
 
+### How the popular AIs plug in (all three layers are in the repo)
+
+| Layer | Who | The one thing you do |
+|---|---|---|
+| **MCP** | Claude Code / Claude Desktop / ChatGPT / VS Code Copilot / Cursor / Gemini CLI / MCPJam … | `python tools/mcp_server.py` (stdio MCP server). Configs are already here: [`.mcp.json`](.mcp.json), [`.cursor/mcp.json`](.cursor/mcp.json), [`.vscode/mcp.json`](.vscode/mcp.json), [`.gemini/settings.json`](.gemini/settings.json). Ten tools: `board_caps` `board_services` `board_manual` `board_run_job` `board_ocr` `board_point` `board_click` `board_type` `board_key` `board_see` |
+| **Agents that read AGENTS.md** | Codex / Jules / Aider / Cursor / Gemini CLI / Copilot coding agent / Windsurf / Augment / goose / opencode / Zed / Warp … | [`AGENTS.md`](AGENTS.md) at the repo root is for them; [`CLAUDE.md`](CLAUDE.md), [`GEMINI.md`](GEMINI.md), [`.clinerules`](.clinerules), [`.windsurfrules`](.windsurfrules), [`.aider.conf.yml`](.aider.conf.yml), [`.github/copilot-instructions.md`](.github/copilot-instructions.md) are thin aliases (pointers only, never a second copy of the manual) |
+| **Text-only chat models** | Doubao / Kimi / Qwen / ERNIE / web DeepSeek … | The windowed app's "save the AI manual" button writes the `.md`, you drag it into the chat; the model writes the job JSON, "run job on the board" executes it — a chat model has no hands |
+
+Which AI belongs to which layer, and the source for every claim, is in [docs/ai-compat.md](docs/ai-compat.md)
+(Chinese): **every row cites a source; anything without first-party documentation is marked unverified**.
+
+> ⚠️ The four MCP configs use `"command": "python"`. If `python` on your machine is the Microsoft Store
+> placeholder (`where python` → `WindowsApps\python.exe`, and running it says "Python was not found"),
+> the client will fail to start. Two fixes: put a real interpreter there (your `...\Scripts\python.exe`,
+> or `py`), or call `tools\mcp-serve.cmd <interpreter>` (it tries `py -3`, then `python`, and accepts an
+> explicit path). When the windowed app runs from source, its "for AI" panel fills in the interpreter that
+> is actually running it, so this pitfall does not apply there.
+
 The first page is the **hard rules**, starting with **never modify the firmware**: `firmware/` is
 read-only — no build, no flash, no source or config edits; ask the human first. Then: never move or
 maximize user windows, no input while a fullscreen app is foreground, ask before anything
@@ -104,6 +122,10 @@ Two prerequisites, once each:
 | CH340 serial driver | run `tools\install-ch340-admin.cmd` as admin (or let Windows install it) | Device Manager shows `USB-SERIAL CH340 (COMx)` under Ports |
 
 Then four commands, each with what you should see:
+
+> ⚠️ Step 1's `build` / `flash` is **humans only**. An AI agent must never run it (see the
+> [hard rules](docs/ai-controller.md)): the firmware running on the board *is* the hands of this
+> machine, and reflashing cuts them off. Steps 2–4 are read-only / ordinary and are fine for agents.
 
 ```bash
 git clone https://github.com/BSGGPRO/esp32p4-hid-agent.git && cd esp32p4-hid-agent
@@ -357,6 +379,8 @@ UART only: protocol works but there are no hands. High-speed only: it is a keybo
 | Document | What it covers |
 |---|---|
 | [docs/ai-controller.md](docs/ai-controller.md) | **The manual you hand to another AI**: hard rules, all 26 operations, jobs you can copy (what `esp32p4-agent.exe --manual` prints) |
+| [docs/ai-compat.md](docs/ai-compat.md) | **Which AI plugs in how** (Chinese): three layers (MCP / AGENTS.md / pasted manual), every claim sourced, unsourced ones marked unverified |
+| [docs/agent-ui.md](docs/agent-ui.md) | Windowed app guide (Chinese): seven buttons, troubleshooting, why the console EXE "flashes and closes" |
 | [docs/field-guide.md](docs/field-guide.md) | Single-file manual: architecture / self-check / interfaces / troubleshooting (Chinese) |
 | [docs/operations.md](docs/operations.md) | Day-to-day conventions and safety red lines (Chinese) |
 | [docs/protocol.md](docs/protocol.md) | Serial/TCP protocol (v1.2, frozen) |

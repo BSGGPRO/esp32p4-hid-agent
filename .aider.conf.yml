@@ -1,0 +1,6 @@
+# aider 接入文件（esp32p4-hid-agent）——只放指针，说明书不复制。
+# 板子 = 这台 Windows 上的真实 USB 键鼠；完整说明书（唯一真相）：docs/ai-controller.md（排错看第 7 节）。
+# 红线：禁止改固件（firmware/ 只读：不编译、不烧录、不改源码）；不动用户窗口（只 restore/focus）；
+#       全屏应用不发键鼠；不可逆动作先问人；别猜坐标，先 ocr/find/ui。
+# 真正干活：python tools/connector.py --selfcheck，或把作业 JSON 从 stdin 喂给它。
+read: AGENTS.md

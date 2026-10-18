@@ -76,6 +76,36 @@ echo '{"steps":[{"op":"ocr","rect":[0,0,600,200]}]}' | esp32p4-agent.exe
 
 作业也可以直接把参数给 Python 侧的 `connector.run_job(dict)`，返回同样的字典。
 
+### 3.1 用 MCP 接（AI 直接把板子当工具调）
+
+`python tools/mcp_server.py` 是一个 **stdio MCP 服务器**（每行一条 JSON-RPC，日志走 stderr，不污染协议）。
+客户端配置仓库里都带了：`.mcp.json`（Claude Code）、`.cursor/mcp.json`（Cursor）、`.vscode/mcp.json`（VS Code / Copilot）。
+Claude Code 也可以一行加上：
+
+```bash
+claude mcp add esp32p4-hid-board -- python tools/mcp_server.py
+```
+
+十个工具，名字固定：
+
+| 工具 | 参数 | 等于 |
+|---|---|---|
+| `board_caps` | 无 | `--caps` |
+| `board_services` | 无 | `--services` |
+| `board_manual` | 无 | `--manual`（就是这份） |
+| `board_run_job` | `job`（对象或字符串，可带 `transport`: auto/tcp/serial） | 任意作业 |
+| `board_ocr` | `rect`（物理像素 `[x1,y1,x2,y2]`）、`as` | `ocr` |
+| `board_point` | `x`、`y` | 移指针 |
+| `board_click` | `x`/`y`，或 `text`（按文字找），`button` | `click` / `find` + `click` |
+| `board_type` | `text` | `type` |
+| `board_key` | `combo`，如 `ctrl+s` | `key` |
+| `board_see` | `question` | `see`（只回答是/否/"这是什么"；它报的坐标别信） |
+
+返回统一是 `{"content":[{"type":"text","text":"<JSON 字符串>"}],"isError":false}`；
+出错时 `isError:true`，text 里是中文说明 + 原始 JSON。
+**注意**：MCP 底下跑的还是同一套 connector，所以第 1 节那七条硬规矩一条都不少——
+工具描述里也写了，别因为"是工具调用"就放松。
+
 ---
 
 ## 4. 作业格式
@@ -96,7 +126,7 @@ echo '{"steps":[{"op":"ocr","rect":[0,0,600,200]}]}' | esp32p4-agent.exe
 - 返回值：
 
 ```json
-{"ok": true,  "steps": [{"i":0,"op":"ocr","ok":true,"rows":["..."],"ms":120}], "vars": {}}
+{"ok": true,  "steps": [{"i":0,"op":"ocr","ok":true,"rows":["..."],"boxes":[{"text":"...","x":0,"y":0,"w":120,"h":22,"cx":60,"cy":11}],"ms":120}], "vars": {}}
 {"ok": false, "steps": [{"i":2,"op":"click","ok":false,"err":"RuntimeError: …"}],
  "err": "第 2 步 click 失败：…"}
 ```
@@ -121,7 +151,7 @@ echo '{"steps":[{"op":"ocr","rect":[0,0,600,200]}]}' | esp32p4-agent.exe
 | `hold` | `keys=["ctrl","shift"]` | 按住不放 |
 | `scroll` | `amount=-3` | 滚轮（负=向下） |
 | `wait` | `ms=500` | 等 |
-| `ocr` | `rect=[x0,y0,x1,y1]`，`as=`，`fresh=true` | 逐行文字 + 坐标 |
+| `ocr` | `rect=[x0,y0,x1,y1]`，`as=`，`fresh=true` | `rows`（逐行文字）+ `boxes`（每行的 `x/y/w/h` 和中心 `cx/cy`，可直接拿去点） |
 | `find` | `text=`，`rect=`，`thresh=0.7`，`as=` | 在区域里找一行字，返回框和中心点 |
 | `look` | `path=`，`region=`，`as=` | 截图存变量（配合 `diff`） |
 | `read_text` | `select_all=true`，`restore_clip=true` | 全选复制取文字（不改剪贴板） |

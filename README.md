@@ -59,6 +59,23 @@ type job.json | esp32p4-agent.exe
 把它丢给另一个能跑命令的 AI（Codex、Claude Code、任何 agent），它 `--manual` 一下就能上手；
 只能读文字的聊天 AI 就读 [docs/ai-controller.md](docs/ai-controller.md)——同一份文件。
 
+### 热门 AI 怎么接（三层入口都已铺好）
+
+| 层 | 谁 | 你只需做一个动作 |
+|---|---|---|
+| **MCP** | Claude Code / Claude Desktop / ChatGPT / VS Code Copilot / Cursor / Gemini CLI / MCPJam … | `python tools/mcp_server.py`（stdio MCP 服务器）。配置已经放好：[`.mcp.json`](.mcp.json)、[`.cursor/mcp.json`](.cursor/mcp.json)、[`.vscode/mcp.json`](.vscode/mcp.json)、[`.gemini/settings.json`](.gemini/settings.json)。十个工具：`board_caps` `board_services` `board_manual` `board_run_job` `board_ocr` `board_point` `board_click` `board_type` `board_key` `board_see` |
+| **读 AGENTS.md 的编码代理** | Codex / Jules / Aider / Cursor / Gemini CLI / Copilot coding agent / Windsurf / Augment / goose / opencode / Zed / Warp … | 仓库根的 [`AGENTS.md`](AGENTS.md) 就是给它们的；[`CLAUDE.md`](CLAUDE.md)、[`GEMINI.md`](GEMINI.md)、[`.clinerules`](.clinerules)、[`.windsurfrules`](.windsurfrules)、[`.aider.conf.yml`](.aider.conf.yml)、[`.github/copilot-instructions.md`](.github/copilot-instructions.md) 是各家的薄别名（只放指针，不复制说明书） |
+| **只会读文字的聊天 AI** | 豆包 / Kimi / 通义 / 文心 / 网页版 DeepSeek … | 窗口版一颗「保存 AI 说明书…」存成 `.md` 拖给它；它出 JSON，你用「用板子运行作业」执行——聊天 AI 没有手，执行器得是你这边 |
+
+哪个 AI 属于哪层、依据是什么，全在 [docs/ai-compat.md](docs/ai-compat.md)：**每条结论带来源，
+没有官方依据的一律标「未验证」**，不猜。
+
+> ⚠️ 四份 MCP 配置里的 `command` 写的是 `python`。如果你机器上的 `python` 是 Microsoft Store 的
+> 占位符（`where python` 指向 `WindowsApps\python.exe`，跑起来报 "Python was not found"），客户端会起不来。
+> 两个改法：把 `command` 换成真解释器（`...\Scripts\python.exe` 或 `py`），或者用
+> `tools\mcp-serve.cmd <解释器路径>`（它先试 `py -3`、再试 `python`，也能直接吃你给的路径）。
+> 窗口版「给 AI 用…」面板在源码运行时，会自动填**正在跑它的那个 Python**，不受这个坑影响。
+
 说明书第一页就是**铁律**，第一条是 **禁止改固件**：`firmware/` 只读，不许编译、烧录、
 改任何固件源码或配置，要改先停下来问人。后面还有「不动用户窗口」「全屏不投键鼠」
 「不可逆先问」「别猜坐标」——这几条是这套工具能安全交出去的前提。
@@ -98,6 +115,9 @@ EXE 不进版本库（是产物不是源码）：`tools\build-agent.cmd` 现打�
 | CH340 串口驱动 | 管理员运行 `tools\install-ch340-admin.cmd`（或设备管理器里让 Windows 自动装） | 设备管理器「端口」下出现 `USB-SERIAL CH340 (COMx)` |
 
 然后四条命令，每条都给了「该看到什么」：
+
+> ⚠️ 第 1 步的 `build` / `flash` **只给人类**。AI 一律不得执行（见 [红线](docs/ai-controller.md#1-硬规矩)：禁止改固件）。
+> 板子上跑着的固件就是这台机器的"手"，重刷等于把手中断。第 2～4 步是只读/普通操作，AI 可以跑。
 
 ```bash
 git clone https://github.com/BSGGPRO/esp32p4-hid-agent.git && cd esp32p4-hid-agent
@@ -347,6 +367,8 @@ http://127.0.0.1:8765/?lang=zh        # 中文
 | 文档 | 讲什么 |
 |---|---|
 | [docs/ai-controller.md](docs/ai-controller.md) | **交给 AI 的说明书**：铁律、26 个操作、能直接抄的作业（`esp32p4-agent.exe --manual` 打印的就是它） |
+| [docs/ai-compat.md](docs/ai-compat.md) | **哪个 AI 怎么接**：三层（MCP / 读 AGENTS.md / 只喂说明书），每条结论带来源，没依据的标「未验证」 |
+| [docs/agent-ui.md](docs/agent-ui.md) | 窗口版使用说明：七个按钮、出错排查、为什么命令行版会"闪退" |
 | [docs/field-guide.md](docs/field-guide.md) | 单文件全量手册：架构 / 自检 / 接口 / 排障 |
 | [docs/operations.md](docs/operations.md) | 日常操作约定与安全红线 |
 | [docs/protocol.md](docs/protocol.md) | 串口/TCP 协议（v1.2，冻结） |

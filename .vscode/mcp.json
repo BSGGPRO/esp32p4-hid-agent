@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "esp32p4-hid-board": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["tools/mcp_server.py"]
+    }
+  }
+}

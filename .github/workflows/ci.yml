@@ -35,6 +35,16 @@ jobs:
           PYTHONUTF8: "1"
         run: python tests/ui_io.py
 
+      - name: MCP 服务器协议（stdio / 每行一条 JSON / 坏输入不死 / 十个工具都带红线）
+        env:
+          PYTHONUTF8: "1"
+        run: python tests/mcp_smoke.py
+
+      - name: 各 AI 接入文件（JSON 合法 / 红线在 / 路径真实 / 无本机绝对路径）
+        env:
+          PYTHONUTF8: "1"
+        run: python tests/agents_files.py
+
       - name: 仪表盘自检（离线拉起 hub，不碰板子）
         env:
           # runner 的默认编码是 cp1252，hub 子进程打印中文会炸
