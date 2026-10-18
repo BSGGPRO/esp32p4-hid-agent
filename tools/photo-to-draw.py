@@ -39,7 +39,9 @@ DRAW = os.path.join(_HERE, "draw-image.py")
 PRESETS = {
     # 线稿：Informative Drawings 出轮廓，再一笔笔描（用户认可的那个效果，最快）
     "sketch": {"engine": "id", "id_model": "anime", "thresh": 200,
-               "simplify": 1.5, "min_len": 5, "brush": 2, "step": 3.0, "smooth": 2},
+               "simplify": 1.2, "min_len": 4, "brush": 2, "step": 2.5, "smooth": 3,
+               "tile": True, "tile_size": 640, "target": 1600,
+               "line_denoise": 30, "clean": 20, "spur": 6.0},
     "quick": {"levels": "95,145,200", "simplify": 2.4, "min_len": 10, "brush": 3},
     "good": {"levels": "90,125,160,200", "simplify": 2.2, "min_len": 8, "brush": 4},
     "hd": {"levels": "70,95,120,145,170,195,220", "simplify": 1.6, "min_len": 7, "brush": 5},
@@ -103,6 +105,10 @@ def main(argv=None) -> int:
                 "--out", art]
         if pres.get("tile"):
             step += ["--tile", "--target", str(pres.get("target", 1500))]
+            if pres.get("tile_size"):
+                step += ["--tile-size", str(pres["tile_size"])]
+            if pres.get("line_denoise"):
+                step += ["--denoise", str(pres["line_denoise"])]
         p1 = subprocess.run(step, capture_output=True, text=True, encoding="utf-8",
                             errors="replace")
         if not os.path.isfile(art):
@@ -118,6 +124,9 @@ def main(argv=None) -> int:
                "--min-len", str(pres["min_len"]),
                "--step", str(pres.get("step", 0.0)),
                "--smooth", str(pres.get("smooth", 0)),
+               "--clean", str(pres.get("clean", 0)),
+               "--spur", str(pres.get("spur", 0.0)),
+               "--join", str(pres.get("join", 0.0)),
                "--out", base, "--transport", a.transport,
                "--brush-size", str(a.brush_size or pres["brush"]),
                "--brush-kind", a.brush_kind]

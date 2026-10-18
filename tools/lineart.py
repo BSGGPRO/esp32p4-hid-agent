@@ -137,7 +137,7 @@ def nms_thin(x: np.ndarray, thresh: float, sigma: float) -> np.ndarray:
     return out
 
 
-def _id_once(sess, tile: Image.Image, crop: bool) -> Image.Image:
+def _id_once(sess, tile: Image.Image, crop: bool, normalize: bool = True) -> Image.Image:
     size = int(sess.get_inputs()[0].shape[-1])
     sc = size / float(max(tile.size))
     small = tile.resize((max(2, int(tile.width * sc)), max(2, int(tile.height * sc))),
@@ -148,15 +148,29 @@ def _id_once(sess, tile: Image.Image, crop: bool) -> Image.Image:
     x = np.asarray(canvas, dtype=np.float32) / 127.5 - 1.0
     y = sess.run(None, {sess.get_inputs()[0].name: x.transpose(2, 0, 1)[None]})[0]
     g = y[0, 0]
-    g = (g - float(g.min())) / (float(g.max()) - float(g.min()) + 1e-9)   # 0=线, 1=白
-    img = Image.fromarray((g * 255.0).astype(np.uint8), mode="L")
+    if normalize:
+        g = (g - float(g.min())) / (float(g.max()) - float(g.min()) + 1e-9)   # 0=线, 1=白
+    g = (np.clip(g, 0.0, 1.0) * 255.0).astype(np.uint8)
+    img = Image.fromarray(g, mode="L")
     if crop:
         img = img.crop((ox, oy, ox + small.width, oy + small.height))
     return img
 
 
-def id_lines_tiled(photo: str, model: str, target: int = 1500, overlap: float = 0.3) -> Image.Image:
-    """分块跑模型再拼起来：方图输入 768，长图单次只剩 350 宽，分块能拿回 2-3 倍分辨率。"""
+def _norm_acc(acc: np.ndarray) -> Image.Image:
+    """拼接后用整幅图做一次归一化（每块各自归一化会导致对比度忽强忽弱）。"""
+    lo, hi = float(acc.min()), float(acc.max())
+    a = (acc - lo) / (hi - lo) if hi > lo else np.zeros_like(acc)
+    return Image.fromarray((a * 255.0).clip(0, 255).astype(np.uint8), mode="L")
+
+
+def id_lines_tiled(photo: str, model: str, target: int = 1500, overlap: float = 0.25,
+                   tile_size: int = 0) -> Image.Image:
+    """分块跑模型再拼起来。
+
+    tile_size>0：固定边长瓦片（照片宽多少就切多大，细节按瓦片算，最细）；
+    tile_size=0：按长宽比切条（省事，但竖图一条有 1280 宽，模型只能吃 768）。
+    """
     import onnxruntime as ort
 
     sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
@@ -166,39 +180,46 @@ def id_lines_tiled(photo: str, model: str, target: int = 1500, overlap: float = 
     ow, oh = max(2, int(W * out_scale)), max(2, int(H * out_scale))
     acc = np.full((oh, ow), 255.0, dtype=np.float32)
 
+    def blit(line: Image.Image, sx0: int, sy0: int, sx1: int, sy1: int) -> None:
+        lx0, ly0 = int(sx0 * out_scale), int(sy0 * out_scale)
+        lx1, ly1 = min(ow, int(sx1 * out_scale)), min(oh, int(sy1 * out_scale))
+        lw, lh = max(2, lx1 - lx0), max(2, ly1 - ly0)
+        part = np.asarray(line.resize((lw, lh), Image.LANCZOS), dtype=np.float32)
+        h2 = min(part.shape[0], oh - ly0)
+        w2 = min(part.shape[1], ow - lx0)
+        if h2 <= 0 or w2 <= 0:
+            return
+        acc[ly0:ly0 + h2, lx0:lx0 + w2] = np.minimum(
+            acc[ly0:ly0 + h2, lx0:lx0 + w2], part[:h2, :w2])
+
+    if tile_size > 0:
+        step = max(32, int(tile_size * (1.0 - overlap)))
+        ys = list(range(0, max(1, H - tile_size + step), step)) or [0]
+        xs = list(range(0, max(1, W - tile_size + step), step)) or [0]
+        for y0 in ys:
+            for x0 in xs:
+                x1, y1 = min(W, x0 + tile_size), min(H, y0 + tile_size)
+                x0 = max(0, x1 - tile_size)
+                y0 = max(0, y1 - tile_size)
+                crop = im.crop((x0, y0, x1, y1))
+                blit(_id_once(sess, crop, crop=True, normalize=False), x0, y0, x1, y1)
+        return _norm_acc(acc)
+
     if H >= W:
         tiles = max(1, int(round(H / float(W))))
         step_y = H / float(tiles)
         for k in range(tiles):
             y0 = max(0, int(k * step_y - step_y * overlap * 0.5))
             y1 = min(H, int((k + 1) * step_y + step_y * overlap * 0.5))
-            crop = im.crop((0, y0, W, y1))
-            line = _id_once(sess, crop, crop=True)
-            ly0 = int(y0 * out_scale)
-            ly1 = min(oh, int(y1 * out_scale))
-            lh, lw = ly1 - ly0, min(ow, int(W * out_scale))
-            part = np.asarray(line.resize((max(2, lw), max(2, lh)), Image.LANCZOS),
-                              dtype=np.float32)
-            part = part[:lh, :lw]
-            acc[ly0:ly0 + part.shape[0], :part.shape[1]] = np.minimum(
-                acc[ly0:ly0 + part.shape[0], :part.shape[1]], part)
+            blit(_id_once(sess, im.crop((0, y0, W, y1)), crop=True, normalize=False), 0, y0, W, y1)
     else:
         tiles = max(1, int(round(W / float(H))))
         step_x = W / float(tiles)
         for k in range(tiles):
             x0 = max(0, int(k * step_x - step_x * overlap * 0.5))
             x1 = min(W, int((k + 1) * step_x + step_x * overlap * 0.5))
-            crop = im.crop((x0, 0, x1, H))
-            line = _id_once(sess, crop, crop=True)
-            lx0 = int(x0 * out_scale)
-            lx1 = min(ow, int(x1 * out_scale))
-            lw, lh = lx1 - lx0, min(oh, int(H * out_scale))
-            part = np.asarray(line.resize((max(2, lw), max(2, lh)), Image.LANCZOS),
-                              dtype=np.float32)
-            part = part[:lh, :lw]
-            acc[:part.shape[0], lx0:lx0 + part.shape[1]] = np.minimum(
-                acc[:part.shape[0], lx0:lx0 + part.shape[1]], part)
-    return Image.fromarray(acc.clip(0, 255).astype(np.uint8), mode="L")
+            blit(_id_once(sess, im.crop((x0, 0, x1, H)), crop=True, normalize=False), x0, 0, x1, H)
+    return _norm_acc(acc)
 
 
 def id_lines(photo: str, model: str, crop: bool = True) -> Image.Image:
@@ -207,6 +228,23 @@ def id_lines(photo: str, model: str, crop: bool = True) -> Image.Image:
 
     sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
     return _id_once(sess, Image.open(photo).convert("RGB"), crop)
+
+
+def drop_small(img: Image.Image, min_area: int) -> Image.Image:
+    """去掉孤立的小线条团（模型在纹理区会拉出零碎短线，也是"杂线"的来源）。"""
+    if min_area <= 0:
+        return img
+    import cv2
+    a = np.asarray(img, dtype=np.uint8)
+    mask = (a < 160).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    keep = np.zeros_like(mask)
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] >= min_area:
+            keep[lab == i] = 1
+    out = a.copy()
+    out[keep == 0] = 255
+    return Image.fromarray(out, mode="L")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -228,6 +266,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tile", action="store_true",
                     help="id 分块推理拼接（长图分辨率翻 2-3 倍，线条更细更准）")
     ap.add_argument("--target", type=int, default=1500, help="--tile 时输出长边像素")
+    ap.add_argument("--tile-size", type=int, default=0,
+                    help="固定瓦片边长（源图 px；0=按长宽比切条。640-800 最细）")
+    ap.add_argument("--denoise", type=int, default=0,
+                    help="去掉面积小于 N 像素的碎线条（0=关；20-60 清杂线）")
     a = ap.parse_args(argv)
 
     if not os.path.isfile(a.photo):
@@ -245,9 +287,11 @@ def main(argv: list[str] | None = None) -> int:
                              ensure_ascii=False))
             return 2
         if a.tile:
-            out_img = id_lines_tiled(a.photo, model, target=a.target)
+            out_img = id_lines_tiled(a.photo, model, target=a.target,
+                                     tile_size=a.tile_size)
         else:
             out_img = id_lines(a.photo, model, crop=not a.no_crop)
+        out_img = drop_small(out_img, a.denoise)
         if a.invert:
             out_img = Image.fromarray(255 - np.asarray(out_img, dtype=np.uint8), mode="L")
         os.makedirs(os.path.dirname(os.path.abspath(outp)), exist_ok=True)

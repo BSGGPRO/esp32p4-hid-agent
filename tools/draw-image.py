@@ -315,6 +315,38 @@ def join_strokes(strokes: list, max_gap: float) -> list:
     return out
 
 
+def prune_spurs(strokes: list, max_len: float) -> list:
+    """去掉"刺"：很短、且一端贴着另一条长线的笔画（骨架在交叉处会岔出小毛刺）。"""
+    if max_len <= 0 or not strokes:
+        return strokes
+    def length(s):
+        return sum(math.hypot(s[i][0] - s[i - 1][0], s[i][1] - s[i - 1][1])
+                   for i in range(1, len(s)))
+
+    long_pts = {}
+    cell = 3.0
+    for s in strokes:
+        if length(s) >= max_len * 2 and len(s) >= 2:
+            for p in s:
+                long_pts.setdefault((int(p[0] // cell), int(p[1] // cell)), []).append(p)
+
+    def touches(p):
+        gx, gy = int(p[0] // cell), int(p[1] // cell)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for q in long_pts.get((gx + dx, gy + dy), ()):
+                    if abs(q[0] - p[0]) <= 1.6 and abs(q[1] - p[1]) <= 1.6:
+                        return True
+        return False
+
+    out = []
+    for s in strokes:
+        if length(s) < max_len and (touches(s[0]) or touches(s[-1])):
+            continue
+        out.append(s)
+    return out
+
+
 def plan_line(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     scale = min(W / float(img.width), H / float(img.height))
     nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
@@ -337,6 +369,20 @@ def plan_line(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
                 if dx or dy:
                     m2 |= np.roll(np.roll(mask, dy, axis=0), dx, axis=1)
         mask = m2
+    clean_area = int(getattr(args, "clean", 0) or 0)
+    if clean_area > 0:
+        try:
+            import cv2
+            m = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE,
+                                 np.ones((3, 3), np.uint8))
+            n_cc, lab, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+            keep = np.zeros_like(m)
+            for i in range(1, n_cc):
+                if stats[i, cv2.CC_STAT_AREA] >= clean_area:
+                    keep[lab == i] = 1
+            mask = keep.astype(bool)
+        except Exception:  # noqa: BLE001
+            pass
     skel = thin_zhang_suen(mask)
     raw = trace_skeleton(skel)
     ox, oy = (W - nw) // 2, (H - nh) // 2
@@ -357,6 +403,9 @@ def plan_line(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
         if len(pts) < 2:
             continue
         strokes.append([[float(x), float(y)] for x, y in pts])
+    spur = float(getattr(args, "spur", 0.0) or 0.0)
+    if spur > 0:
+        strokes = prune_spurs(strokes, spur)
     join_gap = float(getattr(args, "join", 0.0) or 0.0)
     if join_gap > 0:
         strokes = join_strokes(strokes, join_gap)
@@ -870,6 +919,10 @@ def main(argv=None) -> int:
                     help="line 模式平滑遍数（0=关；2-3 磨掉像素台阶）")
     ap.add_argument("--join", type=float, default=0.0,
                     help="端点相距多少 px 内就连成一条笔画（0=关；2-3 让线条连贯）")
+    ap.add_argument("--clean", type=int, default=0,
+                    help="line 模式先去掉面积小于 N 像素的碎块（0=关；20-60 清杂点）")
+    ap.add_argument("--spur", type=float, default=0.0,
+                    help="去掉短于 N px 且贴在其他线上的毛刺（0=关；5-8 清乱线）")
     ap.add_argument("--brush-kind", default="Brush",
                     choices=["Brush", "Marker", "Crayon", "OilBrush", "WaterColor", "AirBrush"],
                     help="画图的笔形（Brush=画笔, Marker=记号笔, Crayon=蜡笔…）")
