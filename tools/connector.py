@@ -375,11 +375,38 @@ def _see_local(im, question: str, max_new_tokens: int) -> str:
 BROWSERS = ("microsoft edge", "google chrome", "chrome", "firefox", "brave", "opera")
 
 
+class _Fresh:
+    """板子动作之后立刻作废截屏缓存。
+
+    成品动作直接调板子（b.key / b.type_text），绕过了 op 层那句 `if op in _CACHE_KILL`，
+    于是下一步 OCR 读到的还是动手之前的截图——"敲完 ni 没有候选条"就是这么来的。
+    包一层之后，将来写新动作不用再记得这条规矩。
+    """
+
+    _KILL = {"key", "type_text", "click", "move", "scroll", "drag", "drag_path", "hold"}
+
+    def __init__(self, b):
+        self._b = b
+
+    def __getattr__(self, name):
+        fn = getattr(self._b, name)
+        if name not in self._KILL:
+            return fn
+
+        def call(*a, **k):
+            try:
+                return fn(*a, **k)
+            finally:
+                _invalidate()
+
+        return call
+
+
 def _brain(transport: str) -> Brain:
     b = Brain(transport=transport)
     b.__enter__()
     b.release()
-    return b
+    return _Fresh(b)
 
 
 def recipe_wechat_send(st: dict, transport: str, rec: dict) -> None:
@@ -407,6 +434,8 @@ def recipe_wechat_send(st: dict, transport: str, rec: dict) -> None:
             raise RuntimeError("当前聊天不是 %r（标题是 %r），不动手" % (to, rec["header"]))
         b.click((x0 + int(W * 0.55), y1 - 95))
         time.sleep(0.4)
+        for _ in range(3):        # 先退掉可能残留的输入法组字（"ni" 这种半截拼音）
+            b.key("backspace")
         b.key("ctrl+a")
         b.key("backspace")
         time.sleep(0.4)
