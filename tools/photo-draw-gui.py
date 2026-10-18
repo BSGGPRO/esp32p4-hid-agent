@@ -37,6 +37,7 @@ class App:
         self.proc: subprocess.Popen | None = None
         self.photo = ""
         self.last_preview = ""
+        self.pending_open = False
 
         fg, bg, sub = "#e8eaf0", "#1b1d22", "#262a32"
         pad = {"padx": 12, "pady": 8}
@@ -107,6 +108,8 @@ class App:
         if p:
             self.photo = p
             self.path_lbl.configure(text=p, fg="#e8eaf0")
+            self.say("已选照片，自动生成预览（不动鼠标）…")
+            self.preview()
 
     def quality_key(self) -> str:
         return ("quick", "good", "hd")[self.quality.current()]
@@ -131,21 +134,30 @@ class App:
                                              encoding="utf-8", errors="replace",
                                              creationflags=CREATE_NO_WINDOW)
                 assert self.proc.stdout is not None
-                last_json = None
+                buf: list[str] = []
+                in_json = False
+                last_info = None
                 for line in self.proc.stdout:
-                    line = line.rstrip()
-                    if not line:
+                    raw = line.rstrip("\n")
+                    if not raw.strip():
                         continue
-                    self.root.after(0, self.say, line)
-                    if line.startswith("{"):
-                        last_json = line
+                    self.root.after(0, self.say, raw)
+                    # CLI 打印的是 indent=2 的多行 JSON：从 "{" 收到 "}" 再解析
+                    stripped = raw.strip()
+                    if not in_json and stripped == "{":
+                        in_json, buf = True, [raw]
+                        continue
+                    if in_json:
+                        buf.append(raw)
+                        if stripped == "}":
+                            in_json = False
+                            try:
+                                last_info = json.loads("\n".join(buf))
+                            except json.JSONDecodeError:
+                                last_info = None
                 self.proc.wait()
-                if last_json:
-                    try:
-                        info = json.loads(last_json)
-                        self.root.after(0, self.report, info)
-                    except json.JSONDecodeError:
-                        pass
+                if last_info is not None:
+                    self.root.after(0, self.report, last_info)
             except Exception as exc:  # noqa: BLE001
                 self.root.after(0, self.say, "出错：%r" % (exc,))
             finally:
@@ -171,6 +183,15 @@ class App:
                      % (r.get("strokes_done"), r.get("interruptions"), round(r.get("ms", 0) / 1000, 1)))
         if prev:
             self.say("  预览：%s" % prev)
+            if self.pending_open:
+                self.pending_open = False
+                self._open(prev)
+
+    def _open(self, path: str) -> None:
+        try:
+            os.startfile(path)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            self.say("打开失败：%r" % (exc,))
 
     def done(self) -> None:
         self.b_preview.configure(state="normal")
@@ -179,6 +200,7 @@ class App:
         self.proc = None
 
     def preview(self) -> None:
+        self.pending_open = True          # 预览完自动把图弹出来
         self.run_cli(["--canvas", "0,0,900,900"])
 
     def draw(self) -> None:
@@ -202,10 +224,33 @@ class App:
         self.run_cli(extra)
 
     def open_preview(self) -> None:
+        """没预览就现算一张（不用先点「① 预览」），有就打开。"""
         if self.last_preview and os.path.isfile(self.last_preview):
-            os.startfile(self.last_preview)  # type: ignore[attr-defined]
-        else:
-            messagebox.showinfo("还没有预览", "先点「① 预览」")
+            self._open(self.last_preview)
+            return
+        if self.photo:
+            self.say("还没有预览，先帮你生成一张（不动鼠标）…")
+            self.preview()          # preview() 结束会自动弹图
+            return
+        newest = self.newest_preview()
+        if newest:
+            self.last_preview = newest
+            self.say("打开最近一张预览：%s" % newest)
+            self._open(newest)
+            return
+        messagebox.showinfo("还没选照片", "先点右上角「选择照片…」")
+
+    @staticmethod
+    def newest_preview() -> str:
+        inbox = os.path.join(os.path.dirname(_ROOT), "inbox")
+        try:
+            files = [os.path.join(inbox, f) for f in os.listdir(inbox)
+                     if f.endswith("-preview.png")]
+        except OSError:
+            return ""
+        if not files:
+            return ""
+        return max(files, key=os.path.getmtime)
 
     def stop(self) -> None:
         if self.proc and self.proc.poll() is None:

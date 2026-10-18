@@ -69,6 +69,8 @@ def main(argv=None) -> int:
                     help="自动打开画图时的窗口大小（默认按画布自动算）")
     ap.add_argument("--keep-canvas", action="store_true", help="不要清空画图里已有的内容")
     ap.add_argument("--no-launch-paint", action="store_true", help="不要自动打开画图")
+    ap.add_argument("--no-invert", action="store_true",
+                    help="深底照片别反色（默认深底图会反色成负片效果）")
     a = ap.parse_args(argv)
 
     if not os.path.isfile(a.photo):
@@ -85,6 +87,8 @@ def main(argv=None) -> int:
            "--preview-width", "4", "--out", base, "--transport", a.transport]
     if a.canvas:
         cmd += ["--canvas", a.canvas]
+    if a.no_invert:
+        cmd += ["--no-invert"]
     if a.max_strokes:
         cmd += ["--max-strokes", str(a.max_strokes)]
     if a.draw:

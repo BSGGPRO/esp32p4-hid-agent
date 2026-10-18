@@ -246,7 +246,7 @@ def plan_line(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
         mask = mag > float(args.edge)
         src = "sobel(edge=%s, blur=%s)" % (args.edge, args.blur)
     else:
-        g = _gray_array(small)
+        g = _gray_array(small, invert_auto=not getattr(args, "no_invert", False))
         mask = g < float(args.thresh)
         src = "threshold(%s)" % args.thresh
     if args.dilate:
@@ -279,7 +279,7 @@ def plan_grid(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     sc = min(W / float(img.width), H / float(img.height))
     nw, nh = max(2, int(img.width * sc)), max(2, int(img.height * sc))
     small = img.resize((nw, nh), Image.LANCZOS)
-    mask = _gray_array(small) < float(args.thresh)
+    mask = _gray_array(small, invert_auto=not getattr(args, "no_invert", False)) < float(args.thresh)
     ox, oy = (W - cols * cell) // 2, (H - rows * cell) // 2
     strokes = []
     for r in range(rows):
@@ -311,7 +311,7 @@ def plan_engrave(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     scale = min(W / float(img.width), H / float(img.height))
     nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
     small = img.resize((nw, nh), Image.LANCZOS)
-    g = _gray_array(small)
+    g = _gray_array(small, invert_auto=not getattr(args, "no_invert", False))
     ox, oy = (W - nw) // 2, (H - nh) // 2
     strokes: list = []
     per_level: list[int] = []
@@ -735,6 +735,8 @@ def main(argv=None) -> int:
     ap.add_argument("--min-len", type=int, default=6, help="丢弃短于该长度(px)的折线")
     ap.add_argument("--simplify", type=float, default=1.2, help="RDP 简化容差 px")
     ap.add_argument("--dilate", action="store_true", help="笔画偏细时先膨胀 1 px")
+    ap.add_argument("--no-invert", action="store_true",
+                    help="深底照片不做反色（默认深底图会反色成'亮处落笔'，负片效果）")
     ap.add_argument("--max-strokes", type=int, default=0, help="最多保留多少笔（0=不限）")
     ap.add_argument("--preview-width", type=int, default=2)
     ap.add_argument("--draw", action="store_true", help="真的落笔（默认只规划）")
