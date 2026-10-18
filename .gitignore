@@ -25,3 +25,8 @@ docs/evidence/
 
 # local material and artifacts
 inbox/
+
+# controller build output (the EXE is a build product, not source)
+dist/
+build/
+*.spec

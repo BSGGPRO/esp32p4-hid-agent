@@ -361,6 +361,12 @@ def start(wait_s: int = 120) -> dict:
     h = _ping()
     if h:
         return h
+    if getattr(sys, "frozen", False):
+        # 打包成 EXE 后 sys.executable 就是 EXE 自己，再 spawn 等于拿 EXE 当 Python 脚本跑。
+        # 视觉服务要在装了 torch/Pillow 的机器上用 `python tools/visiond.py` 起。
+        raise RuntimeError(
+            "这是打包版控制器，不自带视觉服务。请在装了依赖的机器上运行 "
+            "`python tools/visiond.py`（端口 %d）后重试。" % PORT)
     import subprocess
     flags = 0
     if os.name == "nt":

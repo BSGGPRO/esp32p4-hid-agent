@@ -267,7 +267,13 @@ def _ocr_daemon(im):
 def _ocr_local(im) -> list:
     global _ocr_engine
     if _ocr_engine is None:
-        from rapidocr_onnxruntime import RapidOCR
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError as e:
+            # 打包版控制器不带 OCR（本地冷启动要 6.6 s，常驻服务只要 0.12 s）。
+            raise RuntimeError(
+                "没有可用的 OCR：视觉服务（8771）没在跑，本地也没装 rapidocr。"
+                "先在装了依赖的机器上运行 `python tools/visiond.py`。") from e
         # 和 visiond 同一套参数：短边放大是 OCR 卡顿的主因（见 visiond._load_ocr）
         _ocr_engine = RapidOCR(det_limit_type="max", det_limit_side_len=1280,
                                intra_op_num_threads=max(2, (os.cpu_count() or 4) // 2))

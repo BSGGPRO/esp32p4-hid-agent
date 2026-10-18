@@ -120,10 +120,12 @@ cd /d <repo>
 
 ---
 
-## 2. 三种入口，按需选
+## 2. 入口，按需选
 
 | 入口 | 用途 | 限制 |
 |---|---|---|
+| `tools/connector.py` | **写作业就它**：stdin 喂 JSON 作业，整单执行、逐步核对、失败即停 | 推荐；`tools/agent.py` 是它的包装（打包成 EXE 给别的 AI 用） |
+| `esp32p4-agent.exe` | 交给别的 AI 的单文件控制器：`--manual` / `--caps` / `--services` / `--selfcheck` / 作业 | 启动多约 1 秒（自解压）；不带 OCR，要 `visiond` 在跑 |
 | `pc/brain.py <子命令>` | **推荐**：高层动作 + 闭环定位 + JSON 输出 | 一次一个动作，每次连一次透传（约 0.1–0.3 s） |
 | `pc/brain.py run --script plan.json` | **批量**：一次连接串联几十步（画画用这个） | 某个 op 失败默认中止（`--keep-going` 可继续） |
 | `pc/agent_bridge.py <命令>` | 低层协议调试（ping/mouse-move/key-combo…） | `--transport uart` 要板子锁；hub 在跑时用不了。**画画别用它** |
@@ -224,7 +226,7 @@ cd /d <repo>
 | 文件 | 内容 |
 |---|---|
 | `docs/operations.md` | 本文（操作清单与写作业的规矩） |
-| `HANDOFF-TO-AI.txt`（仓库根） | **全量单文件版**：一个文件包含交接/接口/画图流程/协议速查/板子事实/排障，直接发给另一个 AI |
+| `docs/ai-controller.md` | **交给 AI 的说明书**（打包进 `esp32p4-agent.exe`，`--manual` 打印的就是它）：铁律、26 个操作、能直接抄的作业 |
 | `docs/protocol.md` | 串口 JSON 协议（帧格式/命令/错误码/安全语义） |
 | `docs/brain-usage.md` | brain.py 动作层详解与示例脚本 |
 | `docs/pointer-calibration.md` | 指针精度、四角归零、换设备适配、绝对坐标 HID 路线 |

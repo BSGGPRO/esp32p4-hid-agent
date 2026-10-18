@@ -49,6 +49,29 @@ echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]
   | python tools/connector.py
 ```
 
+## Handing the controller to another AI
+
+`esp32p4-agent.exe` is the **single-file controller** (~29 MB, no Python needed on the other side):
+
+```bash
+esp32p4-agent.exe --manual      # the whole manual (same file as docs/ai-controller.md)
+esp32p4-agent.exe --caps        # machine-readable: 26 operations + hard rules + service status
+esp32p4-agent.exe --services    # hub / vision service / board — are they up?
+esp32p4-agent.exe --selfcheck   # screen, OCR, board, pointer, vision
+type job.json | esp32p4-agent.exe
+```
+
+Drop it in front of any agent that can run commands (Codex, Claude Code, …) and `--manual` teaches
+it everything. A text-only chat model reads [docs/ai-controller.md](docs/ai-controller.md) instead.
+
+The first page is the **hard rules**, starting with **never modify the firmware**: `firmware/` is
+read-only — no build, no flash, no source or config edits; ask the human first. Then: never move or
+maximize user windows, no input while a fullscreen app is foreground, ask before anything
+irreversible, and never guess coordinates.
+
+The EXE is a build product, not source (`.gitignore`d): build one with `tools\build-agent.cmd`.
+For batch jobs `python tools/connector.py` is faster — the EXE self-extracts and costs ~1 s per call.
+
 ## What you can do with it
 
 All of these have actually been run, not just planned (measured timings [below](#how-fast-is-take-a-look)):
@@ -324,6 +347,7 @@ UART only: protocol works but there are no hands. High-speed only: it is a keybo
 
 | Document | What it covers |
 |---|---|
+| [docs/ai-controller.md](docs/ai-controller.md) | **The manual you hand to another AI**: hard rules, all 26 operations, jobs you can copy (what `esp32p4-agent.exe --manual` prints) |
 | [docs/field-guide.md](docs/field-guide.md) | Single-file manual: architecture / self-check / interfaces / troubleshooting (Chinese) |
 | [docs/operations.md](docs/operations.md) | Day-to-day conventions and safety red lines (Chinese) |
 | [docs/protocol.md](docs/protocol.md) | Serial/TCP protocol (v1.2, frozen) |

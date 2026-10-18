@@ -23,6 +23,33 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = [ROOT / "README.md", ROOT / "README.en.md", *sorted((ROOT / "docs").glob("*.md"))]
 
 LINK = re.compile(r"\]\(([^)]+)\)")
+# 反引号里的路径也会撒谎：operations.md 曾经指向一个根本不存在的 HANDOFF-TO-AI.txt。
+TICK = re.compile(r"`([^`\n]+)`")
+CHECKED_EXT = (".md", ".txt", ".py", ".json", ".cmd", ".yml", ".yaml", ".png", ".gif")
+TOP_DIRS = {"docs", "tools", "pc", "web", "firmware", "tests", ".github"}
+
+
+def tick_targets(text: str) -> list[str]:
+    """挑出反引号里当**仓库路径**写的引用，比如 ``docs/x.md``、``tools/y.py``。
+
+    刻意收紧，否则全是噪声：散文中提到的文件名（`manual.txt`、`plan.json`）、
+    故意不入库的证据目录（docs/evidence/）、Windows 反斜杠路径、通配符，一律跳过。
+    """
+    out = []
+    for tok in TICK.findall(text):
+        tok = tok.strip()
+        if not tok or " " in tok or "\\" in tok:
+            continue
+        if any(c in tok for c in "*?<>%") or "://" in tok or tok.endswith("/"):
+            continue
+        if "/" not in tok or tok.split("/")[0] not in TOP_DIRS:
+            continue
+        if tok.startswith("docs/evidence/"):
+            continue                       # 按设计不入库，文档里已写明留在那台机器上
+        if not tok.lower().endswith(CHECKED_EXT):
+            continue
+        out.append(tok)
+    return out
 
 
 def tracked() -> set[str] | None:
@@ -68,6 +95,18 @@ def main() -> int:
                     break
             else:
                 print("坏链接: %s → %s" % (rel, link))
+                bad += 1
+
+        # 第二遍：反引号里当路径写的引用
+        text = f.read_text(encoding="utf-8")
+        for tok in tick_targets(text):
+            cands = [(f.parent / tok).relative_to(ROOT).as_posix(), tok]
+            if files is not None:
+                ok = any(c in files for c in cands)
+            else:
+                ok = any((b / tok).exists() for b in (f.parent, ROOT))
+            if not ok:
+                print("坏引用: %s → `%s`（git 里没有这个文件）" % (rel, tok))
                 bad += 1
     if bad:
         print("共 %d 个问题" % bad)

@@ -44,6 +44,28 @@ echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]
   | python tools/connector.py
 ```
 
+## 把控制器交给别的 AI
+
+`esp32p4-agent.exe` 是这套东西的**单文件控制器**（约 29 MB，对方不用装 Python）：
+
+```bash
+esp32p4-agent.exe --manual      # 完整说明书（就是 docs/ai-controller.md，内嵌在里面）
+esp32p4-agent.exe --caps        # 能力清单 JSON：26 个操作 + 铁律 + 服务状态
+esp32p4-agent.exe --services    # hub / 视觉服务 / 板子 三处在不在
+esp32p4-agent.exe --selfcheck   # 屏幕/OCR/板子/指针/视觉 五项
+type job.json | esp32p4-agent.exe
+```
+
+把它丢给另一个能跑命令的 AI（Codex、Claude Code、任何 agent），它 `--manual` 一下就能上手；
+只能读文字的聊天 AI 就读 [docs/ai-controller.md](docs/ai-controller.md)——同一份文件。
+
+说明书第一页就是**铁律**，第一条是 **禁止改固件**：`firmware/` 只读，不许编译、烧录、
+改任何固件源码或配置，要改先停下来问人。后面还有「不动用户窗口」「全屏不投键鼠」
+「不可逆先问」「别猜坐标」——这几条是这套工具能安全交出去的前提。
+
+EXE 不进版本库（是产物不是源码）：`tools\build-agent.cmd` 现打一个。要批量跑作业，
+直接用 `python tools/connector.py` 更快——EXE 每次启动要自解压，多约 1 秒。
+
 ## 能拿来干什么
 
 都是真跑过的，不是设想（实测耗时见[后面](#看和读有多快)）：
@@ -313,6 +335,7 @@ http://127.0.0.1:8765/?lang=zh        # 中文
 
 | 文档 | 讲什么 |
 |---|---|
+| [docs/ai-controller.md](docs/ai-controller.md) | **交给 AI 的说明书**：铁律、26 个操作、能直接抄的作业（`esp32p4-agent.exe --manual` 打印的就是它） |
 | [docs/field-guide.md](docs/field-guide.md) | 单文件全量手册：架构 / 自检 / 接口 / 排障 |
 | [docs/operations.md](docs/operations.md) | 日常操作约定与安全红线 |
 | [docs/protocol.md](docs/protocol.md) | 串口/TCP 协议（v1.2，冻结） |

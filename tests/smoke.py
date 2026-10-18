@@ -124,6 +124,29 @@ for path, pattern, label in (
     check("%s 操作数与代码一致" % label, bool(m) and int(m.group(1)) == len(ops),
           "文档=%s 代码=%d %s" % (m.group(1) if m else "?", len(ops), sorted(ops)))
 
+# 7) 控制器（agent.py）和给 AI 的说明书，也要和代码对得上——加操作忘了改，CI 直接红。
+agent_ops: list[str] = []
+for node in ast.parse((ROOT / "tools" / "agent.py").read_text(encoding="utf-8")).body:
+    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple) \
+            and any(getattr(t, "id", "") == "OPS" for t in node.targets):
+        agent_ops = [e.value for e in node.value.elts
+                     if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+check("agent.py 的操作清单与代码一致", set(agent_ops) == ops,
+      "agent=%d 代码=%d 差=%s" % (len(agent_ops), len(ops), sorted(set(agent_ops) ^ ops)))
+
+manual_path = ROOT / "docs" / "ai-controller.md"
+if manual_path.exists():
+    manual = manual_path.read_text(encoding="utf-8")
+    missing = sorted(o for o in ops if "`%s`" % o not in manual)
+    check("ai-controller.md 每个操作都有说明", not missing, "缺: %s" % missing)
+    m = re.search(r"(\d+) 个操作", manual)
+    check("ai-controller.md 操作数与代码一致", bool(m) and int(m.group(1)) == len(ops),
+          "文档=%s 代码=%d" % (m.group(1) if m else "?", len(ops)))
+    check("ai-controller.md 写了『禁止改固件』", "禁止改固件" in manual, "")
+    check("ai-controller.md 写了『禁止修改固件』(英文)", "Never modify the firmware" in manual, "")
+else:
+    check("docs/ai-controller.md 存在", False, "打包说明书要用它")
+
 print("-" * 60)
 if failures:
     print("失败 %d 项: %s" % (len(failures), ", ".join(failures)))
