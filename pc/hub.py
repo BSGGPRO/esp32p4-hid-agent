@@ -23,6 +23,7 @@
 用法：
     python pc/hub.py                         # 0.0.0.0:8765 页面 + 127.0.0.1:8766 透传 + COM7
     python pc/hub.py --serial COM5           # 指定串口
+    python pc/hub.py --log hub.log           # 日志同时写文件（默认只打到 stderr）
     python pc/hub.py --no-firewall           # 不尝试自动加 Windows 防火墙规则
     python pc/hub.py --serial COM99 --no-lock --port 0 --tcp-port 0   # 自检用（板子离线路径）
 """
@@ -137,8 +138,29 @@ _k32.PurgeComm.argtypes = [wt.HANDLE, wt.DWORD]
 _k32.PurgeComm.restype = wt.BOOL
 
 
+MAX_SOFT_READ_ERRORS = 5   # 连续多少次瞬时串口读错就当设备真没了（有界重试，不无限重试）
+
+# 这些 WinError 说明设备真的不在了/句柄废了：读失败后必须关掉重开，重试没用。
+_PERMANENT_READ_ERRORS = (
+    ERROR_DEVICE_NOT_CONNECTED,
+    ERROR_INVALID_HANDLE,
+    ERROR_BAD_COMMAND,
+    ERROR_FILE_NOT_FOUND,
+)
+
+
 class SerialError(Exception):
-    """串口打不开 / 读写失败 / 被拔出。"""
+    """串口打不开 / 读写失败 / 被拔出。
+
+    code / permanent 让调用方分清「瞬时抖一下」和「设备真没了」：
+    读循环对瞬时错有界重试并继续透传，只有 permanent 才关串口（见 _reader_loop）。
+    不传就是老语义（permanent=False），现有调用方不用改。
+    """
+
+    def __init__(self, message: str = "", code: int | None = None, permanent: bool = False):
+        super().__init__(message)
+        self.code = code                # WinError 整数，None = 不是 Win32 错误
+        self.permanent = permanent      # True = 设备被拔出，必须关掉重开
 
 
 class SerialLink:
@@ -233,10 +255,11 @@ class SerialLink:
             err = ctypes.get_last_error()
             if err in (ERROR_OPERATION_ABORTED, ERROR_SEM_TIMEOUT):
                 return b""
-            if err in (ERROR_DEVICE_NOT_CONNECTED, ERROR_INVALID_HANDLE, ERROR_BAD_COMMAND,
-                       ERROR_FILE_NOT_FOUND, ERROR_GEN_FAILURE):
-                raise SerialError("读串口失败 WinError %d（设备被拔出？）" % err)
-            raise SerialError("读串口失败 WinError %d" % err)
+            if err in _PERMANENT_READ_ERRORS:
+                raise SerialError("读串口失败 WinError %d（设备被拔出）" % err,
+                                  code=err, permanent=True)
+            raise SerialError("读串口失败 WinError %d（瞬时错误，可重试）" % err,
+                              code=err, permanent=False)
         return buf.raw[: got.value]
 
     def write(self, data: bytes) -> int:
@@ -386,6 +409,7 @@ class BoardLink:
             LOG.info("串口 %s 已关闭", self.port)
 
     def _reader_loop(self) -> None:
+        soft_errors = 0          # 连续瞬时读错次数；读到数据就清零
         while not self._stop.is_set() and not self._read_stop.is_set():
             link = self._serial
             if link is None:
@@ -393,12 +417,26 @@ class BoardLink:
             try:
                 data = link.read()
             except SerialError as exc:
-                LOG.warning("串口读失败，稍后重开：%s", exc)
+                if exc.permanent:
+                    LOG.warning("串口读失败（设备没了），关闭待重开：%s", exc)
+                    self._close_serial()
+                    return
+                # 瞬时抖动（CH340 偶发 WinError）：重试几次，别把整条透传掐断
+                soft_errors += 1
+                if soft_errors < MAX_SOFT_READ_ERRORS:
+                    if soft_errors == 1:
+                        LOG.warning("串口读瞬时错误（WinError %s），最多再试 %d 次：%s",
+                                    exc.code, MAX_SOFT_READ_ERRORS - 1, exc)
+                    time.sleep(0.1)
+                    continue
+                LOG.warning("串口连续 %d 次读失败（WinError %s），按设备丢失处理，关闭待重开：%s",
+                            soft_errors, exc.code, exc)
                 self._close_serial()
                 return
             if not data:
                 time.sleep(0.002)
                 continue
+            soft_errors = 0
             with self._mode_lock:
                 mode = self._mode
             if mode == "passthrough":
@@ -1581,6 +1619,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--once-board", action="store_true", help="只采一次板子数据并打印（排障用）")
     parser.add_argument("--verbose", action="store_true", help="调试日志")
     parser.add_argument("--quiet", action="store_true", help="不打印每个 HTTP 请求")
+    parser.add_argument("--log", default="", metavar="PATH",
+                        help="日志文件路径（UTF-8），默认只打到 stderr")
     args = parser.parse_args(argv)
 
     # Windows 控制台常是 GBK；编码不了的字符降级替换；同时强制行缓冲，
@@ -1594,6 +1634,17 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if args.log:
+        try:
+            log_handler = logging.FileHandler(args.log, encoding="utf-8")
+        except OSError as exc:
+            print("ERROR: 打不开日志文件 %s：%s" % (args.log, exc), file=sys.stderr)
+            return 1
+        log_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(log_handler)
+        LOG.info("日志同时写入 %s", os.path.abspath(args.log))
 
     if args.once_board:
         return run_once_board(args)
