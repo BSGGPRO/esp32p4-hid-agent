@@ -251,7 +251,37 @@ claude mcp add esp32p4-hid-board -- python tools/mcp_server.py
 
 ---
 
-## 9. 交接须知
+## 9. 只能聊天的 AI（豆包 / Kimi / 通义 / 网页版）怎么干活
+
+你读得到这份说明书，但**跑不了命令**。没关系——按这个格式回话就行，人会把你的话粘进窗口版
+（`esp32p4-agent-ui.exe` 右下角那个「用板子运行作业」框），板子就会照做。
+
+**你每次只回两种东西之一：**
+
+① **一条作业**（要它动手时）。整个回复只放一个 ```json 代码块，别的解释放在代码块**上面**两行以内。
+第一条作业永远用只读的（`ocr` / `ui` / `find`）先看清楚，别一上来就点：
+
+```json
+{"steps": [{"op": "ocr", "rect": [0, 0, 1200, 400]}]}
+```
+
+② **一次提问**（信息不够时）。比如："记事本现在开着吗？把窗口标题告诉我。"——不要靠猜往下走。
+
+**铁规矩（同第 1 节，聊天场景下更容易踩）：**
+
+- **坐标不能猜**。你不知道鼠标在哪、屏幕是什么样——先要一条只读作业（`ocr` / `ui` / `find`），
+  让人把结果贴回来，再用结果里的 `cx`/`cy` 写下一步。宁可多一轮，不要瞎点。
+- **一次一条作业，别自作聪明串十条**。每条作业 1～3 步，做完让人贴结果，你看完再给下一条。
+- **不可逆的（删除、发送、支付、关机）先问人**，别直接写进作业。
+- **不许编造结果**：人没贴回来就说"我还没看到结果"，不要假装已经执行成功。
+- **禁止改固件**：你的作业里不该出现 `firmware/` 里的任何东西。
+
+**人怎么用你的作业**：复制那段 ```json 整段 → 粘进窗口版的作业框 → 点「用板子运行」→
+窗口会回一句人话（跑完了 / 没跑成 + 原因），人把这句话或截图给你，你再决定下一步。
+
+---
+
+## 10. 交接须知
 
 - 你**不是**这个仓库的主人。提交、推送、发布、改 README 之前先问人。
 - **不许**把桌面截图、日志、剪贴板内容贴到公开地方（聊天、gist、issue）。
@@ -260,7 +290,7 @@ claude mcp add esp32p4-hid-board -- python tools/mcp_server.py
 
 ---
 
-## 10. English quick reference
+## 11. English quick reference
 
 **What this is.** A single executable controller for an ESP32-P4 board that acts as a real USB
 HID keyboard + mouse on this Windows machine. You (the AI) see via screenshots/OCR; the board

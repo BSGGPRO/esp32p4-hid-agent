@@ -39,10 +39,24 @@ from tkinter import filedialog, messagebox, scrolledtext  # noqa: E402
 MANUAL_FILE_NAME = "AI-控制器说明书.md"
 LOG_NAME = "agent-ui-error.log"
 
-# 和 tools/photo-draw-gui.py 保持一致的一套配色，同一套工具别长两张脸
-BG, BG2 = "#1b1d22", "#262a32"
-FG, SUB = "#e8eaf0", "#8b93a7"
+# 深色一套（比 photo-draw-gui 那版更收敛：窗底更暗、卡片分层、边框只留一条）
+BG = "#15171c"        # 窗口底
+BG2 = "#23262f"       # 输入框/文本框
+CARD = "#1d2027"      # 卡片
+FIELD = "#2a2e38"     # 普通按钮
+BORDER = "#2f3440"    # 卡片边框
+FG = "#e8eaf0"        # 正文
+SUB = "#8d95a8"       # 次要文字
+ACCENT = "#5b9dff"    # 主按钮
+ACCENT_DK = "#3f7fe0"
+OK = "#49d19b"        # 通过
+BAD = "#ff6b6b"       # 失败
+WARN = "#f0c04a"      # 进行中
+
 FONT = ("Microsoft YaHei UI", 10)
+FONT_B = ("Microsoft YaHei UI", 10, "bold")
+H1 = ("Microsoft YaHei UI", 14, "bold")
+SMALL = ("Microsoft YaHei UI", 9)
 MONO = ("Consolas", 10)
 
 # 「给 AI 用」面板：只放一层薄接入，说明书全文永远在 docs/ai-controller.md 那一份。
@@ -154,6 +168,75 @@ def ai_payload(name: str) -> str:
             "禁止改 firmware/。\n\n"
             "先跑 python tools/agent.py --services 确认板子和视觉服务在不在，"
             "再一步一核对地做；不确定就先问人。")
+
+
+def _short(text, n: int = 90) -> str:
+    """把异常/日志压成一行短句：窗口里只放人话，长堆栈留给日志文件。"""
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= n else s[:n] + "…"
+
+
+# 自检五项：过了是什么、没过怎么办（用户看不懂 JSON，只看得懂这个）
+_CHECK_ADVICE = {
+    "屏幕截取": "屏幕没抓到。先看看是不是锁屏了、或者远程桌面里跑；再点一次自检。",
+    "OCR 引擎": "认字的引擎没起来。装了依赖的机器上跑 python tools\\visiond.py，或 python tools\\visiond.py --start。",
+    "板子连接": "板子连不上。两个 USB 口都要插（UART 给指令、高速 Type-C 给键鼠）；再点「服务状态」看 hub 和板子 TCP。",
+    "指针校准": "没有指针校准文件，鼠标定位会不准（不影响按键和读字）。要校准跑 python tools\\calibrate-pointer.py。",
+    "视觉服务": "视觉服务没在跑，只影响看图问答（see），键鼠和认字照常。第一次用会自动拉起。",
+}
+
+
+def selfcheck_summary(obj: dict) -> str:
+    """把自检 JSON 翻成人话：一句结论 + 五项各一行 ✓/✗ + 没过的怎么办。"""
+    checks = obj.get("checks") or []
+    bad = [c for c in checks if not c.get("ok")]
+    hard_bad = [c for c in bad if c.get("hard", True)]
+    if not bad:
+        head = "全部通过 —— 屏幕、认字、板子、指针、视觉五项都正常，现在就能用。"
+    elif not hard_bad:
+        head = "能用。有一项小问题，不影响键鼠：%s。" % "、".join(
+            c.get("check", "?") for c in bad)
+    else:
+        head = "没过：%s。" % "、".join(c.get("check", "?") for c in hard_bad)
+    lines = [head]
+    for c in checks:
+        name = c.get("check", "?")
+        if c.get("ok"):
+            ms = c.get("ms")
+            lines.append("  %s   ✓%s" % (name.ljust(8, "　"), ("  %.2f 秒" % (ms / 1000.0)) if ms else ""))
+        else:
+            lines.append("  %s   ✗  %s" % (name.ljust(8, "　"), _short(c.get("err", "没成功"), 60)))
+    for c in bad:
+        advice = _CHECK_ADVICE.get(c.get("check", ""))
+        if advice:
+            lines.append("  · %s" % advice)
+    return "\n".join(lines)
+
+
+def job_summary(obj: dict) -> str:
+    """把作业结果翻成人话：跑没跑成、几步、多久、错在第几步。"""
+    if obj.get("ok"):
+        steps = obj.get("steps") or []
+        ms = sum(int(s.get("ms") or 0) for s in steps)
+        ops = " → ".join(str(s.get("op", "?")) for s in steps[:6])
+        if len(steps) > 6:
+            ops += " → …"
+        return "跑完了：%d 步（%s），共 %.2f 秒。" % (len(steps), ops, ms / 1000.0)
+    return "没跑成：%s" % _short(obj.get("err") or "（没说原因）", 160)
+
+
+def job_details(obj: dict, limit: int = 12) -> str:
+    """只读作业把"读到了什么"顺手贴几行：人要把这段回给聊天 AI，比 7000 字 JSON 好粘。"""
+    lines = []
+    for s in obj.get("steps") or []:
+        rows = s.get("rows") or []
+        if rows:
+            lines.append("  " + " | ".join(str(r) for r in rows[:limit]))
+            if len(rows) > limit:
+                lines.append("  …还有 %d 行，点「复制详情（原始 JSON）」拿完整的" % (len(rows) - limit))
+        elif s.get("text"):
+            lines.append("  " + _short(s["text"], 200))
+    return "\n".join(lines)
 
 
 def log_path() -> str:
@@ -280,18 +363,19 @@ class App(tk.Tk):
         _dpi_aware()
         super().__init__()
         self.title("ESP32-P4 板子控制器 %s" % _agent().VERSION)
-        self.geometry("960x660")
-        self.minsize(780, 540)
+        self.geometry("1080x820")
+        self.minsize(960, 700)
         self.q: queue.Queue = queue.Queue()
         self._busy = False          # 一次只跑一个动作：两个作业抢同一个串口会互相打乱
         self._pending = 0
+        self._last_raw = ""         # 上一次的原始 JSON，给「复制详情」用
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(120, self._drain)
+        self._status("就绪", OK, "点「自检」看这块板子现在能不能用；要看别的 AI 怎么接，点「给 AI 用…」。")
         self._log("就绪。板子是手和眼，这里是遥控器。")
-        self._log("要给别的 AI 用：点「保存 AI 说明书…」，把存出来的 .md 拖给它。")
-        self._log("给 Codex / Claude Code / 豆包这类 AI 接入：点顶部「给 AI 用…」，复制或存成文件。")
-        self._log_busy_hint()
+        self._log("第一次用，建议顺序：自检 → 服务状态。两项都通过就能干活。")
+        self._log("要把控制器交给别的 AI：点「保存 AI 说明书…」，或「给 AI 用…」拿一段配置。")
 
     def report_callback_exception(self, exc, val, tb) -> None:
         """按钮回调里的异常不会传到 main() 的 try；--windowed 下 stderr 是 None，
@@ -318,62 +402,160 @@ class App(tk.Tk):
         self.destroy()
 
     # -- 布局
+    def _button(self, parent, text, cmd, primary: bool = False, width=None):
+        """扁平按钮 + 悬停变色。tk 没有圆角，扁平 + 留白就够体面了。"""
+        bg = ACCENT if primary else FIELD
+        fg = "#0d1117" if primary else FG
+        hot = ACCENT_DK if primary else "#343945"
+        b = tk.Button(parent, text=text, command=cmd,
+                      font=FONT_B if primary else FONT,
+                      bg=bg, fg=fg, activebackground=hot, activeforeground=fg,
+                      disabledforeground=SUB, relief=tk.FLAT, bd=0,
+                      padx=16, pady=8, cursor="hand2", highlightthickness=0)
+        if width:
+            b.configure(width=width)
+
+        def enter(_e):
+            if str(b["state"]) != "disabled":
+                b.configure(bg=hot)
+
+        def leave(_e):
+            if str(b["state"]) != "disabled":
+                b.configure(bg=bg)
+
+        b.bind("<Enter>", enter)
+        b.bind("<Leave>", leave)
+        b._bg_normal = bg                 # 恢复禁用态时用
+        return b
+
+    def _card(self, parent, title: str, hint: str = "") -> tk.Frame:
+        """一张卡片：细边框 + 小标题，返回可往里放东西的 body。"""
+        wrap = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER)
+        head = tk.Frame(wrap, bg=CARD)
+        head.pack(fill=tk.X, padx=16, pady=(12, 0))
+        tk.Label(head, text=title, bg=CARD, fg=FG, font=FONT_B).pack(side=tk.LEFT)
+        if hint:
+            tk.Label(head, text=hint, bg=CARD, fg=SUB, font=SMALL).pack(side=tk.LEFT, padx=(10, 0))
+        body = tk.Frame(wrap, bg=CARD)
+        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=(10, 14))
+        return wrap, body
+
     def _build(self) -> None:
         self.configure(bg=BG)
-        bar = tk.Frame(self, bg=BG, padx=10, pady=8)
-        bar.pack(side=tk.TOP, fill=tk.X)
 
-        self.btn_save = tk.Button(bar, text="保存 AI 说明书…（下载）", width=22, font=FONT,
-                                  command=self.on_save_manual)
-        self.btn_copy = tk.Button(bar, text="复制说明书", width=11, font=FONT, command=self.on_copy_manual)
-        self.btn_check = tk.Button(bar, text="自检", width=8, font=FONT, command=self.on_selfcheck)
-        self.btn_svc = tk.Button(bar, text="服务状态", width=10, font=FONT, command=self.on_services)
-        self.btn_read = tk.Button(bar, text="看说明书", width=10, font=FONT, command=self.on_read_manual)
-        self.btn_ai = tk.Button(bar, text="给 AI 用…", width=10, font=FONT,
-                                command=self.on_ai_panel)
-        for i, b in enumerate((self.btn_save, self.btn_copy, self.btn_check,
-                               self.btn_svc, self.btn_read, self.btn_ai)):
-            b.grid(row=0, column=i, padx=(0, 6))
+        # 顶栏：左边标题，右边版本（不抢眼）
+        head = tk.Frame(self, bg=BG)
+        head.pack(side=tk.TOP, fill=tk.X, padx=18, pady=(14, 6))
+        tk.Label(head, text="板子控制器", bg=BG, fg=FG, font=H1).pack(side=tk.LEFT)
+        tk.Label(head, text="板子是手和眼 · 这里是遥控器", bg=BG, fg=SUB,
+                 font=SMALL).pack(side=tk.LEFT, padx=(12, 0), pady=(4, 0))
+        tk.Label(head, text="v%s" % _agent().VERSION, bg=BG, fg=SUB,
+                 font=SMALL).pack(side=tk.RIGHT)
 
-        tk.Label(bar, text="保存出来的 .md 可以直接拖给 Codex / 豆包 / Gemini 用",
-                 fg=SUB, bg=BG, font=FONT).grid(row=1, column=0, columnspan=6,
-                                                pady=(6, 0), sticky="w")
+        # 底部状态：先 pack 再 pack 可扩展的 body，否则会被挤出去（pack 顺序的坑）
+        bottom = tk.Frame(self, bg=BG)
+        bottom.pack(side=tk.BOTTOM, fill=tk.X, padx=18, pady=(6, 10))
+        self._dot = tk.Label(bottom, text="●", fg=OK, bg=BG, font=SMALL)
+        self._dot.pack(side=tk.LEFT)
+        self.status = tk.Label(bottom, text="", anchor="w", fg=SUB, bg=BG, font=SMALL)
+        self.status.pack(side=tk.LEFT, fill=tk.X, padx=(6, 0))
 
-        box = tk.LabelFrame(self, text="输出", padx=6, pady=6, fg=FG, bg=BG,
-                            font=FONT, labelanchor="nw")
-        box.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10)
-        self.out = scrolledtext.ScrolledText(box, height=18, width=1, wrap=tk.WORD, font=MONO,
-                                             state=tk.DISABLED, bg=BG2, fg=FG,
-                                             insertbackground=FG, relief=tk.FLAT)
+        body = tk.Frame(self, bg=BG)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=18)
+
+        # 三行用 grid：中间那行（结果）吃剩余空间，上下两行保自然高度。
+        # 用 pack 时窗口一紧就会把最后 pack 的按钮挤成一条缝，grid 的 weight 没这个毛病。
+        body.rowconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1)
+
+        # 第一排：左边"交给 AI"（主操作），右边"检查"
+        row1 = tk.Frame(body, bg=BG)
+        row1.grid(row=0, column=0, sticky="ew")
+        row1.columnconfigure(0, weight=3, uniform="r1")
+        row1.columnconfigure(1, weight=2, uniform="r1")
+
+        c_ai, b_ai = self._card(row1, "把说明书交给 AI", "存成 .md 拖给它，或直接给配置")
+        c_ai.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        self.btn_save = self._button(b_ai, "保存 AI 说明书…（下载）", self.on_save_manual, primary=True)
+        self.btn_save.pack(side=tk.TOP, fill=tk.X)
+        line = tk.Frame(b_ai, bg=CARD)
+        line.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
+        self.btn_copy = self._button(line, "复制说明书", self.on_copy_manual)
+        self.btn_copy.pack(side=tk.LEFT)
+        self.btn_ai = self._button(line, "给 AI 用…", self.on_ai_panel)
+        self.btn_ai.pack(side=tk.LEFT, padx=(8, 0))
+
+        c_ck, b_ck = self._card(row1, "检查", "只看结论，不看代码")
+        c_ck.grid(row=0, column=1, sticky="nsew")
+        self.btn_check = self._button(b_ck, "自检", self.on_selfcheck)
+        self.btn_check.pack(side=tk.LEFT)
+        self.btn_svc = self._button(b_ck, "服务状态", self.on_services)
+        self.btn_svc.pack(side=tk.LEFT, padx=(8, 0))
+        self.btn_read = self._button(b_ck, "看说明书", self.on_read_manual)
+        self.btn_read.pack(side=tk.LEFT, padx=(8, 0))
+
+        # 输出（占大头）
+        c_out, b_out = self._card(body, "结果", "✓ 通过  ✗ 没过  … 正在跑")
+        c_out.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        self.out = scrolledtext.ScrolledText(b_out, height=8, width=1, wrap=tk.WORD,
+                                            font=MONO, state=tk.DISABLED,
+                                            bg=BG2, fg=FG, insertbackground=FG,
+                                            relief=tk.FLAT, bd=0, padx=10, pady=8)
         self.out.pack(fill=tk.BOTH, expand=True)
+        for tag, color in (("ok", OK), ("bad", BAD), ("busy", WARN), ("dim", SUB)):
+            self.out.tag_configure(tag, foreground=color)
+        self.out.tag_configure("head", foreground=FG, font=FONT_B)
 
-        job = tk.LabelFrame(self, text="运行作业（JSON）", padx=6, pady=6, fg=FG, bg=BG,
-                            font=FONT, labelanchor="nw")
-        job.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(8, 0))
-        self.job_in = tk.Text(job, height=4, width=1, wrap=tk.WORD, font=MONO, bg=BG2, fg=FG,
-                              insertbackground=FG, relief=tk.FLAT)
+        # 作业
+        c_job, b_job = self._card(body, "用板子运行作业（JSON）", "按下去板子真的会动手")
+        c_job.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        jrow = tk.Frame(b_job, bg=CARD)
+        jrow.pack(side=tk.TOP, fill=tk.X)
+        self.job_in = tk.Text(jrow, height=3, width=1, wrap=tk.WORD, font=MONO,
+                              bg=BG2, fg=FG, insertbackground=FG, relief=tk.FLAT,
+                              bd=0, padx=10, pady=8)
         self.job_in.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.job_in.insert("1.0", '{"steps":[{"op":"title","exe":"msedge"}]}')
-        side = tk.Frame(job, bg=BG)
-        side.pack(side=tk.RIGHT, fill=tk.Y, padx=(8, 0))
-        self.btn_run = tk.Button(side, text="用板子运行", width=12, font=FONT, command=self.on_run)
-        self.btn_run.pack(side=tk.TOP, pady=(0, 6))
-        tk.Button(side, text="清空输出", width=12, font=FONT, command=self.clear).pack(side=tk.TOP)
+        self.btn_run = self._button(jrow, "用板子运行", self.on_run, primary=True)
+        self.btn_run.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
 
-        self.status = tk.Label(self, text="", anchor="w", fg=SUB, bg=BG, padx=10, pady=4,
-                               font=FONT)
-        self.status.pack(side=tk.BOTTOM, fill=tk.X)
+        tools = tk.Frame(b_job, bg=CARD)
+        tools.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
+        self.btn_detail = self._button(tools, "复制详情（原始 JSON）", self.on_copy_detail)
+        self.btn_detail.pack(side=tk.LEFT)
+        btn_clear = self._button(tools, "清空输出", self.clear)
+        btn_clear.pack(side=tk.LEFT, padx=(8, 0))
 
     # -- 输出
     def _log(self, text: str, tag: str = "") -> None:
         mark = {"ok": "✓ ", "bad": "✗ ", "busy": "… "}.get(tag, "")
         self.out.configure(state=tk.NORMAL)
-        self.out.insert(tk.END, "%s%s\n" % (mark, text))
+        self.out.insert(tk.END, "%s%s\n" % (mark, text), tag or ())
         self.out.see(tk.END)
         self.out.configure(state=tk.DISABLED)
 
-    def _log_busy_hint(self) -> None:
-        self.status.configure(text="提示：耗时的操作会在后台跑，界面不会卡。")
+    def _log_block(self, text: str, tag: str = "") -> None:
+        """多行块：第一行按 tag 上色，其余行用暗色，读起来像一张结果卡。"""
+        lines = text.splitlines() or [""]
+        self.out.configure(state=tk.NORMAL)
+        for i, ln in enumerate(lines):
+            t = tag if i == 0 else ("dim" if not ln.strip().startswith("·") else "dim")
+            self.out.insert(tk.END, "%s%s\n" % ("✓ " if i == 0 and tag == "ok" else
+                                                "✗ " if i == 0 and tag == "bad" else "", ln), t)
+        self.out.see(tk.END)
+        self.out.configure(state=tk.DISABLED)
+
+    def _status(self, text: str, color: str = SUB, tip: str = "") -> None:
+        """底部状态栏：一个色点 + 一句话。tip 是更长的解释，鼠标停上去能看到。"""
+        try:
+            self._dot.configure(fg=color)
+            self.status.configure(text=text)
+            self.configure(cursor="arrow")
+            self.status.configure(text=text)
+            if tip:
+                self.status.configure(text="%s —— %s" % (text, tip))
+        except tk.TclError:
+            pass
 
     def clear(self) -> None:
         self.out.configure(state=tk.NORMAL)
@@ -384,6 +566,7 @@ class App(tk.Tk):
         state = tk.NORMAL if on else tk.DISABLED
         for b in (self.btn_check, self.btn_svc, self.btn_run):
             b.configure(state=state)
+            b.configure(bg=b._bg_normal if on else "#22262e")
 
     def _bg(self, label: str, fn) -> None:
         """耗时活放后台线程，结果回主线程显示（tkinter 不是线程安全的）。
@@ -396,7 +579,7 @@ class App(tk.Tk):
         self._busy = True
         self._pending += 1
         self._enable(False)
-        self._log(label, "busy")
+        self._status("%s…（在后台跑，界面不会卡）" % label, WARN)
 
         def work() -> None:
             try:
@@ -412,8 +595,9 @@ class App(tk.Tk):
             while True:
                 label, ok, text = self.q.get_nowait()
                 self._pending -= 1
-                self._log("%s → %s" % (label, "完成" if ok else "失败"), "ok" if ok else "bad")
-                self._log(text)
+                self._log_block(text, "ok" if ok else "bad")
+                self._status("%s：%s" % (label, "通过" if ok else "没通过"),
+                             OK if ok else BAD)
         except queue.Empty:
             pass
         except tk.TclError:
@@ -457,14 +641,35 @@ class App(tk.Tk):
         self._log("（这份内容在关掉窗口后可能被系统清掉；要长期留着用「保存 AI 说明书…」。）")
 
     def on_selfcheck(self) -> None:
-        self._bg("五项自检（约 5 秒）", _selfcheck)
+        def work():
+            text = selfcheck_text()          # 内部是 JSON，给机器看
+            try:
+                obj = json.loads(text)
+            except Exception:                # noqa: BLE001 — 不是 JSON 就原样给人看
+                return False, text
+            self._last_raw = text
+            return bool(obj.get("ok")), selfcheck_summary(obj)
+        self._bg("自检", work)
 
     def on_services(self) -> None:
         def work():
             s = _agent().services()
             up = any(x["up"] for x in (s["hub"], s["board_tcp"], s["vision"]))
+            self._last_raw = json.dumps(s, ensure_ascii=False, indent=2)
             return up, services_text(s)
-        self._bg("查服务状态", work)
+        self._bg("服务状态", work)
+
+    def on_copy_detail(self) -> None:
+        """把上一次的原始 JSON 放进剪贴板：平时藏起来，真要排错时才看。"""
+        if not self._last_raw:
+            self._log("还没有可复制的详情。先点「自检」或「用板子运行」。")
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(self._last_raw)
+            self._log("上一次的原始结果（%d 字符）已复制到剪贴板。" % len(self._last_raw), "ok")
+        except tk.TclError:
+            self._log("复制失败：剪贴板被别的程序占着。", "bad")
 
     def on_ai_panel(self) -> tk.Toplevel:
         """把控制器交给别的 AI：选一个，复制/存下它要的配置或指令。
@@ -608,7 +813,18 @@ class App(tk.Tk):
 
     def on_run(self) -> None:
         raw = self.job_in.get("1.0", tk.END)
-        self._bg("运行作业", lambda: run_job_text(raw))
+
+        def work():
+            ok, text = run_job_text(raw)
+            try:
+                obj = json.loads(text)
+            except Exception:                # noqa: BLE001
+                return ok, text
+            self._last_raw = text
+            head = job_summary(obj)
+            detail = job_details(obj) if ok else ""
+            return ok, (head + "\n" + detail if detail else head)
+        self._bg("运行作业", work)
 
 
 def windowless_selftest() -> dict:
@@ -638,6 +854,34 @@ def windowless_selftest() -> dict:
             assert os.path.isfile(p), "给的 mcp_server.py 不存在：%s" % p
         return "%d 个目标%s" % (len(AI_TARGETS), "，仓库路径可用" if p else "，身边无仓库（会给出替代说明）")
 
+    def probe_speech():
+        """结论要人话、而且必须和 JSON 一致：全过、只有软项挂、硬项挂，三种都说对。"""
+        base = [{"check": "屏幕截取", "ok": True, "ms": 30},
+                {"check": "OCR 引擎", "ok": True, "ms": 120},
+                {"check": "板子连接", "ok": True, "ms": 8},
+                {"check": "指针校准", "ok": True, "ms": 0},
+                {"check": "视觉服务", "ok": True, "ms": 3}]
+        s = selfcheck_summary({"ok": True, "checks": base})
+        assert "全部通过" in s and s.count("✓") == 5, s
+        soft = [dict(c) for c in base] + []
+        soft[-1] = {"check": "视觉服务", "ok": False, "err": "没在跑", "hard": False}
+        s2 = selfcheck_summary({"ok": True, "checks": soft})
+        assert "能用" in s2 and "视觉服务" in s2, s2
+        hard = [dict(c) for c in base]
+        hard[2] = {"check": "板子连接", "ok": False, "err": "连不上 COM7", "hard": True}
+        s3 = selfcheck_summary({"ok": False, "checks": hard})
+        assert "没过" in s3 and "板子连接" in s3 and "怎么办" not in s3, s3
+        assert "✗" in s3 and "两个 USB 口" in s3, s3
+        j = job_summary({"ok": True, "steps": [{"op": "title", "ms": 100}, {"op": "ocr", "ms": 40}]})
+        assert "跑完了" in j and "2 步" in j and "title → ocr" in j, j
+        j2 = job_summary({"ok": False, "err": "第 2 步 click 失败：x out of range"})
+        assert "没跑成" in j2 and "第 2 步" in j2, j2
+        d = job_details({"ok": True, "steps": [{"op": "ocr", "rows": ["A", "B", "C"]}]})
+        assert "A | B | C" in d, d
+        d2 = job_details({"ok": True, "steps": [{"op": "ocr", "rows": ["x"] * 30}]})
+        assert "还有 18 行" in d2, d2
+        return "自检/作业结论都是人话且与 JSON 一致"
+
     for name, fn in (
         ("说明书可读（字符数）", lambda: len(manual_text())),
         ("说明书含禁止改固件", lambda: "禁止改固件" in manual_text()),
@@ -645,6 +889,7 @@ def windowless_selftest() -> dict:
         ("能力清单 op_count", lambda: json.loads(caps_text())["op_count"]),
         ("窗口能构建（控件名）", probe_app),
         ("给 AI 用：不出现临时目录路径", probe_ai_payloads),
+        ("自检/作业只说人话", probe_speech),
     ):
         try:
             out[name] = {"ok": True, "value": fn()}
