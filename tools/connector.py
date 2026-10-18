@@ -15,9 +15,12 @@
 
 支持的操作（每条都可带 "require"，不满足就整单失败退出，绝不带病往下走）：
 
-    restore   title=<子串>                还原最小化/托盘里的窗口（不移动、不改大小）
-    focus     title=<子串>                切到前台
-    title     title=<子串>                报告当前窗口标题（facts 用 Win32，不靠模型）
+    restore   title=<子串> | exe=<进程名>   还原最小化/托盘里的窗口（不移动、不改大小）
+    focus     title=<子串> | exe=<进程名>   切到前台
+    title     [title=<子串> | exe=<进程名>]  报告窗口标题（facts 用 Win32，不靠模型）
+    ui        [title=.. | exe=..] [buttons=true]
+                                          把整个窗口读成结构：文字行 + 可疑按钮，都带屏幕坐标
+                                          PrintWindow 渲染——窗口被挡住也能读
     key       combo=<ctrl+t>              按组合键
     type      text=<...>                  敲字（只支持能直接映射的键）
     click     x= y=  [button=left|right]  点坐标；或 on=<变量名> 点某个 find 结果
@@ -38,6 +41,9 @@
               微信发消息（标题核对 → 清空输入框 → 拼音选字/直接敲 → 发前核对 → 回车 → 发后核对）
     recipe    name=open-url  url=<网址> [expect=标题关键字] [new_tab=true]
               开浏览器到某网址（开着就 Ctrl+T 新标签，没开就 Win+R 交给系统，最后核对标题）
+
+按进程名找窗口：播放器这类程序标题就是当前内容（网易云的标题是歌名），
+按应用名找不到，用 exe=cloudmusic 这种进程名找。
 
 变量（as=）之后可以用 on=<名字>（click / move / point 都认）。
 
@@ -113,17 +119,59 @@ def windows():
     return dr.list_windows()
 
 
-def pick(title: str) -> dict | None:
-    """按标题子串挑窗口；可见的优先，其次是能拿到句柄的。"""
+_EXE: dict[int, str] = {}
+
+
+def exe_of(pid: int) -> str:
+    """进程可执行文件名（小写）。"""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    h = k.OpenProcess(0x1000, False, int(pid))      # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    try:
+        n = wintypes.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        if not k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
+            return ""
+        return os.path.basename(buf.value).lower()
+    finally:
+        k.CloseHandle(h)
+
+
+def _exe_cached(pid: int) -> str:
+    if pid not in _EXE:
+        _EXE[pid] = exe_of(pid)
+    return _EXE[pid]
+
+
+def pick(title: str = "", exe: str | None = None) -> dict | None:
+    """按标题子串、或按 exe=进程名 挑窗口；可见的优先，其次是能拿到句柄的。
+
+    播放器这类程序窗口标题就是当前内容（网易云的标题是歌名 "Daylight - Seredris"），
+    按应用名永远找不到——所以也能按进程名找：{"op": "focus", "exe": "cloudmusic"}。
+    """
+    want = clean(title)
     best = None
     for w in windows():
-        if clean(title) not in clean(w["title"]):
+        ok = (exe.lower() in _exe_cached(w["pid"])) if exe else (want in clean(w["title"]))
+        if not ok:
             continue
         iconic = w["rect"][0] <= -30000
         rank = (not iconic, w["rect"][2] - w["rect"][0])
         if best is None or rank > best[0]:
             best = (rank, w)
     return best[1] if best else None
+
+
+def pick_st(st: dict) -> dict:
+    """配置里怎么指窗口：title=<标题子串>、exe=<进程名>，两个都不给就取最宽的那个窗口。"""
+    w = pick(st.get("title", ""), st.get("exe"))
+    if not w:
+        raise RuntimeError("没找到窗口（title=%r exe=%r）" % (st.get("title"), st.get("exe")))
+    return w
 
 
 def restore(w: dict) -> None:
@@ -189,10 +237,18 @@ def _ocr_daemon(im):
         import visiond
 
         h = visiond._ping()
-        if not h:
-            visiond.start()
-        elif not h.get("ocr"):
-            time.sleep(0.2)                  # OCR 引擎还在加载，等一下再试
+        if not h or not h.get("ocr"):
+            visiond.start()                  # 只保证服务起来了（约 1 秒）
+            # 「服务起来了」不等于「OCR 引擎装好了」（还要约 4 秒）。等它真能干活再发图，
+            # 否则会退回本地引擎——在本进程里白建一个 OCR 引擎，多花好几秒。
+            t0 = time.time()
+            while time.time() - t0 < 15:
+                h = visiond._ping(1.0)
+                if h and h.get("ocr"):
+                    break
+                time.sleep(0.15)
+            if not (h and h.get("ocr")):
+                return None
         buf = io.BytesIO()
         im.save(buf, "PNG")
         body = json.dumps({"png_b64": base64.b64encode(buf.getvalue()).decode()}).encode()
@@ -228,17 +284,173 @@ def _ocr_local(im) -> list:
     return rows
 
 
-def ocr(rect) -> list:
-    """RapidOCR：一次拿回所有行的文字和屏幕坐标（坐标已经换算回整屏）。"""
-    x0, y0, x1, y1 = [int(v) for v in rect]
-    im = _screen().crop((x0, y0, x1, y1))
+def _ocr_rows(im) -> list:
+    """对一张图识字，坐标是图内坐标。"""
     rows = _ocr_daemon(im)
     if rows is None:
         rows = _ocr_local(im)
+    return rows
+
+
+def ocr(rect, fresh: bool = False) -> list:
+    """RapidOCR：一次拿回所有行的文字和屏幕坐标（坐标已经换算回整屏）。
+
+    fresh=True 强制重截——轮询「输入完没有」时要看新画面，不能吃 5 秒内的缓存。
+    """
+    x0, y0, x1, y1 = [int(v) for v in rect]
+    if fresh:
+        _invalidate()
+    im = _screen().crop((x0, y0, x1, y1))
+    rows = _ocr_rows(im)
     for r in rows:
         r["x"] += x0
         r["y"] += y0
     return rows
+
+
+def poll(fn, timeout: float = 2.5, every: float = 0.15):
+    """反复试到 fn 返回真值为止，超时返回 None。
+
+    替掉「固定 sleep 等界面反应」：界面快就立刻继续，慢就等够。
+    """
+    end = time.time() + float(timeout)
+    while True:
+        v = fn()
+        if v:
+            return v
+        if time.time() >= end:
+            return None
+        time.sleep(every)
+
+
+def _hwnd_shot(hwnd: int):
+    """PrintWindow 渲染整个窗口（被别的窗口挡住也能拿到真实画面）。返回 (图, 屏幕原点)。"""
+    import ctypes
+    from ctypes import wintypes
+
+    from PIL import Image
+
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    g = ctypes.WinDLL("gdi32", use_last_error=True)
+    h = ctypes.c_void_p(int(hwnd))
+    r = wintypes.RECT()
+    u.GetWindowRect(h, ctypes.byref(r))
+    w, ht = r.right - r.left, r.bottom - r.top
+    if w <= 0 or ht <= 0:
+        raise RuntimeError("窗口尺寸 %dx%d，没法渲染" % (w, ht))
+
+    class BIH(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long),
+                    ("biHeight", ctypes.c_long), ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                    ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD)]
+
+    hdc = u.GetWindowDC(h)
+    mem = g.CreateCompatibleDC(hdc)
+    bmp = g.CreateCompatibleBitmap(hdc, w, ht)
+    g.SelectObject(mem, bmp)
+    try:
+        if not u.PrintWindow(h, mem, 2):            # PW_RENDERFULLCONTENT
+            raise RuntimeError("PrintWindow 渲染失败")
+        bi = BIH()
+        bi.biSize = ctypes.sizeof(bi)
+        bi.biWidth, bi.biHeight = w, -ht
+        bi.biPlanes, bi.biBitCount = 1, 32
+        buf = ctypes.create_string_buffer(w * ht * 4)
+        g.GetDIBits(mem, bmp, 0, ht, buf, ctypes.byref(bi), 0)
+        im = Image.frombuffer("RGBA", (w, ht), buf, "raw", "BGRA", 0, 1).convert("RGB")
+    finally:
+        g.DeleteObject(bmp)
+        g.DeleteDC(mem)
+        u.ReleaseDC(h, hdc)
+    return im, (r.left, r.top)
+
+
+def _blobs(im) -> list:
+    """亮块粗定位：返回 [(x, y, w, h, 面积), ...]（图内坐标）。
+
+    按钮/图标没有文字，OCR 抓不到，但它们是比背景亮的一块——按亮度找块就出来了。
+    """
+    import numpy as np
+    from PIL import Image
+
+    g = im.convert("L")
+    s = max(1, int(max(g.size) / 420.0))            # 降到 ~420 像素宽再找，够用且快
+    a = np.asarray(g.resize((max(1, g.width // s), max(1, g.height // s)), Image.BILINEAR))
+    a = a.astype(np.float32)
+    m = a >= (a.mean() + 0.9 * a.std() + 8.0)
+    h, w = m.shape
+    seen = np.zeros((h, w), dtype=bool)
+    out = []
+    for y0 in range(h):
+        for x0 in range(w):
+            if not m[y0, x0] or seen[y0, x0]:
+                continue
+            stack = [(y0, x0)]
+            seen[y0, x0] = True
+            minx = maxx = x0
+            miny = maxy = y0
+            n = 0
+            while stack:
+                cy, cx = stack.pop()
+                n += 1
+                if cx < minx:
+                    minx = cx
+                if cx > maxx:
+                    maxx = cx
+                if cy < miny:
+                    miny = cy
+                if cy > maxy:
+                    maxy = cy
+                for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                    if 0 <= ny < h and 0 <= nx < w and m[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+            out.append((minx * s, miny * s, (maxx - minx + 1) * s, (maxy - miny + 1) * s, n * s * s))
+    return out
+
+
+def ui_map(w: dict, with_buttons: bool = True, max_items: int = 60) -> dict:
+    """把一个窗口读成结构：文字行 + 疑似按钮，全部带屏幕坐标。
+
+    为什么要有这个：图标按钮没有文字，ocr 看不见；整屏截图又被自己（或者别的窗口）挡住。
+    这里用 PrintWindow 渲染窗口本身，再按亮度找块——「这界面上有什么、能点什么」
+    一条命令拿全，不用再猜一个界面半小时。
+    """
+    im, origin = _hwnd_shot(w["hwnd"])
+    if im.width < 120 or im.height < 60:
+        raise RuntimeError("窗口 %r 是最小化的（%dx%d），先 restore / focus 再读界面"
+                           % (w["title"], im.width, im.height))
+    x0, y0 = origin
+    texts = []
+    for r in _ocr_rows(im):
+        texts.append({
+            "text": r["text"], "x": int(r["x"]), "y": int(r["y"]),
+            "w": int(r["w"]), "h": int(r["h"]),
+            "cx": x0 + int(r["x"] + r["w"] // 2), "cy": y0 + int(r["y"] + r["h"] // 2),
+        })
+    out = {"hwnd": int(w["hwnd"]), "title": w["title"], "origin": [x0, y0],
+           "size": [im.width, im.height], "texts": texts[:max_items],
+           "buttons": [], "source": "printwindow"}
+    if not with_buttons:
+        return out
+    boxes = [(t["x"], t["y"], t["w"], t["h"]) for t in texts]
+    for bx, by, bw, bh, _area in _blobs(im):
+        if not (10 <= bw <= 90 and 10 <= bh <= 90):
+            continue                                # 太细是笔画，太大是整块背景
+        if not 0.35 <= bw / float(bh) <= 2.8:
+            continue
+        if any(bx < tx + tw and tx < bx + bw and by < ty + th and ty < by + bh
+               for tx, ty, tw, th in boxes):
+            continue                                # 落在文字里的亮像素不算按钮
+        out["buttons"].append({
+            "x": bx, "y": by, "w": bw, "h": bh,
+            "cx": x0 + bx + bw // 2, "cy": y0 + by + bh // 2,
+        })
+    out["buttons"].sort(key=lambda b: (b["y"] // 24, b["x"]))
+    return out
 
 
 def _shot(rect=None, longest: int = 640):
@@ -417,9 +629,9 @@ def recipe_wechat_send(st: dict, transport: str, rec: dict) -> None:
     if not w:
         raise RuntimeError("没找到微信窗口")
     restore(w)
-    time.sleep(0.6)
+    time.sleep(0.15)              # 只是给窗口一点出现时间，真正的等待交给下面的标题轮询
     dr.focus_hwnd(int(w["hwnd"]))
-    time.sleep(0.5)
+    time.sleep(0.15)
     x0, y0, x1, y1 = w["rect"]
     W = x1 - x0
     # 标题条很窄：再往下就是消息区，宽的高亮行（比如消息里的网址）会冒充标题
@@ -427,50 +639,76 @@ def recipe_wechat_send(st: dict, transport: str, rec: dict) -> None:
     band_rect = (x0 + 340, y1 - 140, x1 - 40, y1 - 45)
     b = _brain(transport)
     try:
-        rows = ocr(hdr_rect)
-        head = max(rows, key=lambda r: ratio(to, r["text"])) if rows else None
-        rec["header"] = head["text"] if head else None
-        if not head or ratio(to, head["text"]) < 0.7:
+        # 等标题对得上（原来死等 1.1 秒；现在窗口一出来就往下走）
+        head = {}
+
+        def header_ok():
+            rows = ocr(hdr_rect, fresh=True)
+            if not rows:
+                return False
+            head["row"] = max(rows, key=lambda r: ratio(to, r["text"]))
+            return ratio(to, head["row"]["text"]) >= 0.7
+
+        poll(header_ok, 3.0)
+        rec["header"] = head.get("row", {}).get("text")
+        if not head.get("row") or ratio(to, head["row"]["text"]) < 0.7:
             raise RuntimeError("当前聊天不是 %r（标题是 %r），不动手" % (to, rec["header"]))
         b.click((x0 + int(W * 0.55), y1 - 95))
-        time.sleep(0.4)
+        time.sleep(0.25)
         for _ in range(3):        # 先退掉可能残留的输入法组字（"ni" 这种半截拼音）
             b.key("backspace")
         b.key("ctrl+a")
         b.key("backspace")
-        time.sleep(0.4)
-        base = {tight(r["text"]) for r in ocr(band_rect)}
+        base = {tight(r["text"]) for r in ocr(band_rect, fresh=True)}
+
+        def typed(val):           # 敲完没有：候选条出来了，或者敲进去的字已经出现在输入框里
+            band = ocr(band_rect, fresh=True)
+            has_cand = any(r["text"].strip()[:1].isdigit() for r in band)
+            txt = alnum("".join(r["text"] for r in band))
+            return (band, has_cand) if (has_cand or alnum(val) in txt) else None
+
         for piece in pieces:
             kind, _, val = piece.partition(":")
             b.type_text(val)
-            time.sleep(0.9)
-            band = ocr(band_rect)
+            band, has_cand = poll(lambda: typed(val), 2.0) or ([], False)
             if kind == "raw":
                 # 只有"候选条真的在"才按回车（候选行以序号开头）；否则回车会把没写完的消息发出去
-                if any(r["text"].strip()[:1].isdigit() for r in band):
+                if has_cand:
                     b.key("enter")
-                    time.sleep(0.7)
+                    poll(lambda: alnum(val) in alnum("".join(
+                        r["text"] for r in ocr(band_rect, fresh=True))) or None, 1.5)
                 continue
-            if not band:
+            if not has_cand:
                 raise RuntimeError("敲完 %r 没有候选条，输入法可能不是中文" % val)
             b.key("1")
-            time.sleep(0.8)
             # 候选条消失的准确标志：拼音串不再出现在输入框里（"0"/占位符那类噪声不能当依据）
             key = alnum(val)
-            left = [r["text"] for r in ocr(band_rect) if key and key in alnum(r["text"])]
-            if left:
+
+            def pinyin_gone():
+                rows = ocr(band_rect, fresh=True)
+                return rows if not [r for r in rows if key and key in alnum(r["text"])] else None
+
+            if poll(pinyin_gone, 2.0) is None:      # 原来固定 0.8 秒
+                left = [r["text"] for r in ocr(band_rect, fresh=True)
+                        if key and key in alnum(r["text"])]
                 raise RuntimeError("拼音还留在输入框里（%r），没敢回车" % left)
-        blob = alnum("".join(r["text"] for r in ocr(band_rect)))
+        blob = alnum("".join(r["text"] for r in ocr(band_rect, fresh=True)))
         raws = [p.split(":", 1)[1] for p in pieces if p.startswith("raw:")]
         miss = [r for r in raws if alnum(r) not in blob]
         if miss:
             raise RuntimeError("输入框里没看到 %r，没敢回车" % miss)
         msg_rect = (x0 + 340, y0 + 700, x1, y1)
-        before = {(tight(r["text"]), int(r["y"])) for r in ocr(msg_rect)}
+        before = {(tight(r["text"]), int(r["y"])) for r in ocr(msg_rect, fresh=True)}
         b.key("enter")
-        time.sleep(1.6)
-        after = ocr(msg_rect)
-        still = [r["text"] for r in ocr(band_rect) if tight(r["text"]) not in base]
+
+        def sent():               # 新气泡出现就算发成功（原来死等 1.6 秒）
+            after = ocr(msg_rect, fresh=True)
+            new = [r["text"] for r in after
+                   if (tight(r["text"]), int(r["y"])) not in before and cjk(r["text"])]
+            return (after, new) if new else None
+
+        after, new = poll(sent, 3.0) or (ocr(msg_rect, fresh=True), [])
+        still = [r["text"] for r in ocr(band_rect, fresh=True) if tight(r["text"]) not in base]
         new = [r["text"] for r in after
                if (tight(r["text"]), int(r["y"])) not in before and cjk(r["text"])]
         rec.update(input_after_send=still, new_bubbles=new)
@@ -589,9 +827,7 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
             try:
                 _game_guard(st)          # 全屏里不发送键鼠（除非 force）
                 if op in ("restore", "focus", "title"):
-                    w = pick(st.get("title", ""))
-                    if not w:
-                        raise RuntimeError("没找到窗口 %r" % st.get("title"))
+                    w = pick_st(st)
                     if op == "restore":
                         restore(w)
                         time.sleep(st.get("wait", 0.6))
@@ -600,7 +836,7 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                         dr.focus_hwnd(int(w["hwnd"]))
                         time.sleep(st.get("wait", 0.5))
                     rec["hwnd"] = int(w["hwnd"])
-                    rec["title"] = pick(st.get("title", ""))["title"] if op != "title" else w["title"]
+                    rec["title"] = w["title"]
                     if st.get("as"):
                         vars[st["as"]] = int(w["hwnd"])
 
@@ -670,6 +906,13 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
 
                 elif op == "wait":
                     time.sleep(float(st.get("ms", 500)) / 1000.0)
+
+                elif op == "ui":
+                    # 一次把这个窗口读成结构：文字 + 可疑按钮（都带屏幕坐标）
+                    w = pick_st(st)
+                    rec["result"] = ui_map(w, bool(st.get("buttons", True)))
+                    if st.get("as"):
+                        vars[st["as"]] = rec["result"]
 
                 elif op == "ocr":
                     rows = ocr(st["rect"])
@@ -813,10 +1056,11 @@ def selfcheck(transport: str = "tcp") -> dict:
 
         h = visiond._ping(1.0)
         if not h:
-            raise RuntimeError("没在跑（首次 see 会自动起，或 visiond.py --start）")
-        if not h.get("ready"):
-            raise RuntimeError("起来了但模型还没加载完")
-        return h
+            raise RuntimeError("没在跑（首次 ocr/see 会自动起，或 visiond.py --start）")
+        if not h.get("ocr"):
+            raise RuntimeError("起来了但 OCR 引擎还没加载完")
+        # 大模型按需加载（见 visiond._serve），没装进显存不算故障——真要看图时自己会装
+        return {"ready": h.get("ready"), "ocr": h.get("ocr"), "vram_mb": h.get("vram_mb")}
 
     def profile():
         p = r"C:\ProgramData\dsh\pointer-profile.json"
@@ -835,7 +1079,7 @@ def selfcheck(transport: str = "tcp") -> dict:
 
 
 _READ_ONLY = {"look", "ocr", "find", "read_text", "diff", "title", "see",
-              "vision", "wait", "wait_change", "clip"}
+              "vision", "ui", "wait", "wait_change", "clip"}
 
 
 def _is_disconnect(err: str) -> bool:

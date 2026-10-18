@@ -52,12 +52,17 @@ hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221
 ]}
 ```
 
-操作：`restore` / `focus` / `title` / `key` / `type` / `click` / `point` / `move` / `drag` /
+操作：`restore` / `focus` / `title` / `ui` / `key` / `type` / `click` / `point` / `move` / `drag` /
 `drag_path` / `hold` / `scroll` / `wait` / `look` / `ocr` / `find` / `see` / `check` / `vision` /
 `diff` / `wait_change` / `read_text` / `clip` / `launch` / `recipe`。
 
-- 视觉模型和 OCR 引擎都跑在**常驻服务**里（`tools/visiond.py`）：各只加载一次，之后每次提问
-  1 秒级、读字百毫秒级；第一次 `see` / `ocr` 会自动把它拉起来。冷启动约 25 秒，别误当成卡死。
+- **找不到窗口就按进程名找**：播放器/编辑器的标题是当前内容（网易云的标题就是歌名），
+  `title` 子串永远匹配不上。所有窗口操作都认 `exe=`：`{"op":"focus","exe":"cloudmusic"}`。
+- **陌生界面先 `ui`，不要猜坐标**：`{"op":"ui","exe":"cloudmusic"}` 返回这个窗口的
+  `texts`（文字行 + 屏幕中心）和 `buttons`（亮块找出的按钮 + 屏幕中心）。用 `PrintWindow`
+  渲染，窗口被挡住也能读。图标没有文字，OCR 看不见——这一步就是为了解决那个。
+- 视觉模型和 OCR 引擎都跑在**常驻服务**里（`tools/visiond.py`）。OCR 启动即用（冷启动约 5 秒）；
+  视觉模型**第一次 `see` 才加载**（另加约 11 秒，2.5 GB 显存），不用就不占。
 - **显存会还**：模型空转 3 分钟自动卸载（进程和 OCR 留着），下次用自动装回。
   打游戏前想立刻还：`python tools/visiond.py --unload`（实测全卡 3780 → 1171 MiB）。
 - 读字要快：`{"op":"ocr","rect":[x0,y0,x1,y1]}` 小框约 0.12 秒；框越小越快，别整屏 OCR。

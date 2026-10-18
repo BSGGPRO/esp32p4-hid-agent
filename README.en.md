@@ -61,32 +61,52 @@ Output is always JSON: `{"ok": true, "steps": [...], "vars": {...}}`.
 
 ---
 
-## The connector: one file, 24 operations
+## The connector: one file, 26 operations
 
 `tools/connector.py` reads a job from stdin, prints the result, and **writes no files**.
 Every operation accepts `require`; when it does not match, the job stops.
 
 | Group | Operations | Notes |
 |---|---|---|
-| Window | `restore` `focus` `title` | Un-minimize / bring to front / read the title (Win32 facts, not a model) |
+| Window | `restore` `focus` `title` `ui` | Un-minimize / bring to front / read the title (Win32 facts) / read a whole window as a structure |
 | Input | `click` `move` `point` `drag` `drag_path` `hold` `scroll` `key` `type` | `point` is closed-loop: it corrects itself onto the target pixel |
 | Observe | `look` `ocr` `find` `diff` `wait_change` `read_text` | `find` locates a line of text in a region and returns its centre |
-| Vision | `see` `vision` | Optional local VLM answering "what is this area", see below |
+| Vision | `see` `check` `vision` | `check` is yes/no only; `see` answers in one sentence; `vision action=unload` frees VRAM |
 | System | `clip` `launch` `wait` | Clipboard read/write, start a program, sleep |
 | Recipes | `recipe` | `wechat-send`, `open-url` — finished actions that verify themselves |
 
+### Unfamiliar UI: let `ui` read it
+
+Finding a button in an app you have never seen is the slowest part of the job: icons carry no
+text, so OCR cannot see them. `ui` renders the window and returns **text lines plus candidate
+buttons**, all with screen coordinates:
+
+```json
+{"op": "ui", "exe": "cloudmusic"}
+→ {"texts": [{"text": "落泪", "cx": 210, "cy": 1180}, ...],
+   "buttons": [{"cx": 313, "cy": 1022, "w": 34, "h": 34}, {"cx": 408, ...}, ...]}
+```
+
+It renders through `PrintWindow`, so it works even when the window is **covered** by something
+else; buttons are found as bright blobs outside the text boxes. Measured: 0.13–0.7 s warm,
+6.6 s cold (OCR engine start-up included).
+
+**Window titles lie.** Players and editors put the current content in the title (NetEase Cloud
+Music is titled `Daylight - Seredris`), so matching by app name never works. Every window
+operation also takes a process name: `{"op": "focus", "exe": "cloudmusic"}`.
+
 ### How fast is "take a look"
 
-The vision model (Qwen2.5-VL-3B, 4-bit, ~2.5 GB VRAM) runs in a **resident service**:
-the model loads once, and every question afterwards just ships a small crop.
-
-Cold start costs ~25 s once (both engines load in parallel); steady state, measured on this
-machine while idle:
+OCR runs in a **resident service** (CPU only); the vision model (Qwen2.5-VL-3B, 4-bit, ~2.5 GB
+VRAM) is **loaded on demand** — it costs nothing until something actually asks for a picture.
+Cold start is ~5 s for OCR alone, plus ~11 s the first time you `see`. Steady state, measured on
+this machine while idle:
 
 | Action | Time |
 |---|---|
 | `ocr` small crop (~5 lines) | **0.12 s** (in-service) / 0.62 s including process start |
 | `ocr` wide crop (~34 lines) | 1.4 s |
+| `ui` on a window (text + buttons) | **0.13–0.7 s** depending on window size |
 | `see` `speed=fast` (side 480) | 1.2 s |
 | `see` default (side 640) | 1.7 s |
 | `see` `speed=fine` (side 1280) | 3–4 s |
@@ -115,9 +135,11 @@ ramble rambles *and* gets things wrong. `check` is the yes/no form: it only ever
 
 ### It gives the VRAM back (so gaming stays smooth)
 
-The resident vision model holds 2.5 GB of VRAM — a real slice of an 8 GB laptop GPU while you
-game. So it **unloads itself after 3 idle minutes** (the process and the OCR engine stay; OCR is
-CPU-only), and the next `see` / `check` loads it again (~25 s, once).
+The vision model holds 2.5 GB of VRAM — a real slice of an 8 GB laptop GPU while you game.
+So it holds nothing by default: **it is not loaded at start-up** (the service preloads OCR only,
+which is CPU work), it **unloads itself after 3 idle minutes**, and fullscreen unloads it too.
+The first `see` / `check` after that loads it again (~11 s). OCR-only work never touches VRAM —
+measured over a whole session of OCR jobs, the card stayed at 1157 MiB.
 
 ```bash
 python tools/visiond.py --unload     # free VRAM now (run this before a game)
@@ -138,7 +160,7 @@ unloads within 5 seconds and no keyboard/mouse input is sent into it at all.**
 |---|---|
 | Fullscreen game / fullscreen video | unloads the model (VRAM goes back to the game); refuses `key` `type` `click` `move` `point` `drag` `hold` `scroll` `recipe` |
 | You really do need to act | that step needs `"force": true` |
-| You leave fullscreen | `fullscreen` goes back to false; the next vision call loads it again (12–25 s) |
+| You leave fullscreen | `fullscreen` goes back to false; the next vision call loads it again (11 s) |
 | You want it off | set `DSV_GAME_MODE=0` |
 
 The test is "the foreground window covers the whole monitor *including the taskbar*", not "how big
@@ -200,8 +222,10 @@ anything not in the table is left as-is, so a missing entry never breaks the pag
 | Performance | ✅ | ping 18.4 ms, mouse_move 12.5 ms, 332 messages/s burst |
 | Pointer accuracy | ✅ 1 px | four-corner calibration, worst error 1 px |
 | Self-check | ✅ 1.1 s, 5/5 | `--selfcheck`: screen 2560×1440 / OCR / board / pointer / vision |
-| Vision latency | ✅ 1.2 s / 1.7 s | `speed=fast` / default; the ~25 s cold start is paid once |
+| Vision latency | ✅ 1.2 s / 1.7 s | `speed=fast` / default; first `see` loads the model (+11 s), paid once |
 | OCR latency | ✅ 0.12 s | small crop, OCR engine resident (was 2.7 s per job) |
+| UI reading | ✅ 0.13–0.7 s | `ui` returns the window's text lines plus candidate buttons in one call |
+| Idle VRAM | ✅ 1157 MiB | a full round of OCR-only jobs never loaded the model |
 | Dashboard i18n | ✅ tested | switched to English, still English after reload; `?lang=zh` switches back |
 
 ---

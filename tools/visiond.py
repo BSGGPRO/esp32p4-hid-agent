@@ -297,9 +297,9 @@ def _serve() -> None:
             pass
 
     srv = ThreadingHTTPServer((HOST, PORT), H)
-    if not _game_mode():          # 全屏（在打游戏）别抢显存，第一次真要问图时再装
-        threading.Thread(target=_load, daemon=True).start()
-    threading.Thread(target=_load_ocr, daemon=True).start()   # 两个引擎并行加载
+    # 只预载 OCR（几十毫秒就能用）；视觉大模型不预载——文字/按钮定位根本用不到它，
+    # 第一次真要问图时 /see 里 _ensure_loaded() 再装，省 2.5 GB 显存和十几秒启动。
+    threading.Thread(target=_load_ocr, daemon=True).start()
     threading.Thread(target=_idle_watch, daemon=True).start()  # 空转就把显存还回去
     srv.serve_forever()
 
@@ -327,8 +327,9 @@ def warm(wait_s: int = 120) -> dict:
     """确保模型在显存里：没加载就让服务去加载，等它就绪。"""
     h = _ping(1.0)
     if not h:
-        return start(wait_s)
-    if h.get("ready"):
+        start(wait_s)                 # 只保证服务起来了，模型要不要装由下面的 /warm 决定
+        h = _ping(1.0)
+    if h and h.get("ready"):
         return h
     _post("/warm", timeout=5)
     t0 = time.time()
@@ -352,12 +353,14 @@ def _port_free() -> bool:
 
 
 def start(wait_s: int = 120) -> dict:
-    """后台起服务并等就绪。已经在跑就直接返回；跑了但模型被卸了就让它装回来。"""
+    """后台起服务并等它「能干活」。
+
+    等的是服务起来（OCR 立刻可用），不是等大模型装好——大模型第一次 /see 才加载。
+    要它现在就装进显存，用 warm()。
+    """
     h = _ping()
     if h:
-        if h.get("ready"):
-            return h
-        return warm(wait_s)
+        return h
     import subprocess
     flags = 0
     if os.name == "nt":
@@ -371,9 +374,9 @@ def start(wait_s: int = 120) -> dict:
     t0 = time.time()
     while time.time() - t0 < wait_s:
         h = _ping(1.0)
-        if h and h.get("ready"):
+        if h:
             return h
-        time.sleep(0.5)
+        time.sleep(0.2)
     raise RuntimeError(f"视觉服务 {wait_s}s 内没就绪")
 
 
