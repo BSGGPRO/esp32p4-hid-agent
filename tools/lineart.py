@@ -137,15 +137,11 @@ def nms_thin(x: np.ndarray, thresh: float, sigma: float) -> np.ndarray:
     return out
 
 
-def id_lines(photo: str, model: str, crop: bool = True) -> Image.Image:
-    """Informative Drawings：照片 -> 线稿（白底黑线）。模型固定输入 768/1024 方图。"""
-    import onnxruntime as ort
-
-    sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
+def _id_once(sess, tile: Image.Image, crop: bool) -> Image.Image:
     size = int(sess.get_inputs()[0].shape[-1])
-    im = Image.open(photo).convert("RGB")
-    sc = size / float(max(im.size))
-    small = im.resize((max(2, int(im.width * sc)), max(2, int(im.height * sc))), Image.LANCZOS)
+    sc = size / float(max(tile.size))
+    small = tile.resize((max(2, int(tile.width * sc)), max(2, int(tile.height * sc))),
+                        Image.LANCZOS)
     canvas = Image.new("RGB", (size, size), (255, 255, 255))
     ox, oy = (size - small.width) // 2, (size - small.height) // 2
     canvas.paste(small, (ox, oy))
@@ -157,6 +153,60 @@ def id_lines(photo: str, model: str, crop: bool = True) -> Image.Image:
     if crop:
         img = img.crop((ox, oy, ox + small.width, oy + small.height))
     return img
+
+
+def id_lines_tiled(photo: str, model: str, target: int = 1500, overlap: float = 0.3) -> Image.Image:
+    """分块跑模型再拼起来：方图输入 768，长图单次只剩 350 宽，分块能拿回 2-3 倍分辨率。"""
+    import onnxruntime as ort
+
+    sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
+    im = Image.open(photo).convert("RGB")
+    W, H = im.size
+    out_scale = target / float(max(W, H))
+    ow, oh = max(2, int(W * out_scale)), max(2, int(H * out_scale))
+    acc = np.full((oh, ow), 255.0, dtype=np.float32)
+
+    if H >= W:
+        tiles = max(1, int(round(H / float(W))))
+        step_y = H / float(tiles)
+        for k in range(tiles):
+            y0 = max(0, int(k * step_y - step_y * overlap * 0.5))
+            y1 = min(H, int((k + 1) * step_y + step_y * overlap * 0.5))
+            crop = im.crop((0, y0, W, y1))
+            line = _id_once(sess, crop, crop=True)
+            ly0 = int(y0 * out_scale)
+            ly1 = min(oh, int(y1 * out_scale))
+            lh, lw = ly1 - ly0, min(ow, int(W * out_scale))
+            part = np.asarray(line.resize((max(2, lw), max(2, lh)), Image.LANCZOS),
+                              dtype=np.float32)
+            part = part[:lh, :lw]
+            acc[ly0:ly0 + part.shape[0], :part.shape[1]] = np.minimum(
+                acc[ly0:ly0 + part.shape[0], :part.shape[1]], part)
+    else:
+        tiles = max(1, int(round(W / float(H))))
+        step_x = W / float(tiles)
+        for k in range(tiles):
+            x0 = max(0, int(k * step_x - step_x * overlap * 0.5))
+            x1 = min(W, int((k + 1) * step_x + step_x * overlap * 0.5))
+            crop = im.crop((x0, 0, x1, H))
+            line = _id_once(sess, crop, crop=True)
+            lx0 = int(x0 * out_scale)
+            lx1 = min(ow, int(x1 * out_scale))
+            lw, lh = lx1 - lx0, min(oh, int(H * out_scale))
+            part = np.asarray(line.resize((max(2, lw), max(2, lh)), Image.LANCZOS),
+                              dtype=np.float32)
+            part = part[:lh, :lw]
+            acc[:part.shape[0], lx0:lx0 + part.shape[1]] = np.minimum(
+                acc[:part.shape[0], lx0:lx0 + part.shape[1]], part)
+    return Image.fromarray(acc.clip(0, 255).astype(np.uint8), mode="L")
+
+
+def id_lines(photo: str, model: str, crop: bool = True) -> Image.Image:
+    """Informative Drawings：照片 -> 线稿（白底黑线）。模型固定输入 768/1024 方图。"""
+    import onnxruntime as ort
+
+    sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
+    return _id_once(sess, Image.open(photo).convert("RGB"), crop)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -175,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--id-model", default="anime",
                     help="id 引擎的模型：anime / contour / contour1024")
     ap.add_argument("--no-crop", action="store_true", help="id 输出不裁掉白边")
+    ap.add_argument("--tile", action="store_true",
+                    help="id 分块推理拼接（长图分辨率翻 2-3 倍，线条更细更准）")
+    ap.add_argument("--target", type=int, default=1500, help="--tile 时输出长边像素")
     a = ap.parse_args(argv)
 
     if not os.path.isfile(a.photo):
@@ -191,7 +244,10 @@ def main(argv: list[str] | None = None) -> int:
                               "hint": "hf-mirror.com/x-Liola-x/informative-drawings-onnx"},
                              ensure_ascii=False))
             return 2
-        out_img = id_lines(a.photo, model, crop=not a.no_crop)
+        if a.tile:
+            out_img = id_lines_tiled(a.photo, model, target=a.target)
+        else:
+            out_img = id_lines(a.photo, model, crop=not a.no_crop)
         if a.invert:
             out_img = Image.fromarray(255 - np.asarray(out_img, dtype=np.uint8), mode="L")
         os.makedirs(os.path.dirname(os.path.abspath(outp)), exist_ok=True)

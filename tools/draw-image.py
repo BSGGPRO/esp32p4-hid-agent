@@ -234,6 +234,87 @@ def rdp(points: list[tuple[float, float]], eps: float) -> list[tuple[float, floa
     return [p for i, p in enumerate(points) if keep[i]]
 
 
+def resample(points: list[tuple[float, float]], step: float) -> list[tuple[float, float]]:
+    """按弧长等距重采样（步长 step px），让曲线由很多小段拼出来。"""
+    if len(points) < 2 or step <= 0:
+        return points
+    out = [points[0]]
+    for i in range(1, len(points)):
+        x0, y0 = points[i - 1]
+        x1, y1 = points[i]
+        seg = math.hypot(x1 - x0, y1 - y0)
+        if seg <= 1e-9:
+            continue
+        n = max(1, int(round(seg / step)))
+        for k in range(1, n + 1):
+            t = k / float(n)
+            out.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+    return out
+
+
+def smooth_polyline(points: list[tuple[float, float]], passes: int) -> list[tuple[float, float]]:
+    """移动平均平滑（端点固定）：把像素台阶磨成顺滑曲线。"""
+    if len(points) < 3 or passes <= 0:
+        return points
+    pts = list(points)
+    for _ in range(passes):
+        nxt = [pts[0]]
+        for i in range(1, len(pts) - 1):
+            x = (pts[i - 1][0] + 2.0 * pts[i][0] + pts[i + 1][0]) / 4.0
+            y = (pts[i - 1][1] + 2.0 * pts[i][1] + pts[i + 1][1]) / 4.0
+            nxt.append((x, y))
+        nxt.append(pts[-1])
+        pts = nxt
+    return pts
+
+
+def join_strokes(strokes: list, max_gap: float) -> list:
+    """把端点相邻的碎笔画接成一条长笔画（骨架在交叉/断裂处会切碎，接起来更顺、抬笔更少）。"""
+    if max_gap <= 0 or len(strokes) < 2:
+        return strokes
+    n = len(strokes)
+    used = [False] * n
+
+    def dist(a, b):
+        return math.hypot(a[0] - b[0], a[1] - b[1])
+
+    def nearest(pt):
+        best_j, best_d, best_end = -1, max_gap, 0
+        for j in range(n):
+            if used[j]:
+                continue
+            s = strokes[j]
+            d0, d1 = dist(s[0], pt), dist(s[-1], pt)
+            if d0 <= best_d:
+                best_j, best_d, best_end = j, d0, 0
+            if d1 <= best_d:
+                best_j, best_d, best_end = j, d1, 1
+        return best_j, best_end
+
+    out = []
+    for i in range(n):
+        if used[i]:
+            continue
+        used[i] = True
+        chain = list(strokes[i])
+        while True:                                   # 往后接
+            j, end = nearest(chain[-1])
+            if j < 0:
+                break
+            seg = list(strokes[j])
+            used[j] = True
+            chain = chain + (seg if end == 0 else seg[::-1])
+        while True:                                   # 往前接
+            j, end = nearest(chain[0])
+            if j < 0:
+                break
+            seg = list(strokes[j])
+            used[j] = True
+            chain = (seg if end == 1 else seg[::-1]) + chain
+        out.append(chain)
+    return out
+
+
 def plan_line(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     scale = min(W / float(img.width), H / float(img.height))
     nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
@@ -260,13 +341,25 @@ def plan_line(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     raw = trace_skeleton(skel)
     ox, oy = (W - nw) // 2, (H - nh) // 2
     strokes = []
+    step = float(getattr(args, "step", 0.0) or 0.0)
+    smooth_n = int(getattr(args, "smooth", 0) or 0)
     for line in raw:
         if len(line) < args.min_len:
             continue
         simp = rdp([(float(x), float(y)) for x, y in line], args.simplify)
         if len(simp) < 2:
             continue
-        strokes.append([[x + ox, y + oy] for x, y in simp])
+        pts = [(x + ox, y + oy) for x, y in simp]
+        if step > 0:
+            pts = resample(pts, step)
+        if smooth_n > 0:
+            pts = smooth_polyline(pts, smooth_n)
+        if len(pts) < 2:
+            continue
+        strokes.append([[float(x), float(y)] for x, y in pts])
+    join_gap = float(getattr(args, "join", 0.0) or 0.0)
+    if join_gap > 0:
+        strokes = join_strokes(strokes, join_gap)
     meta = {"mode": args.mode, "source": src, "image_scaled": [nw, nh],
             "skeleton_px": int(skel.sum()), "polylines_raw": len(raw)}
     return strokes, meta
@@ -771,6 +864,12 @@ def main(argv=None) -> int:
                     help="深底照片不做反色（默认深底图会反色成'亮处落笔'，负片效果）")
     ap.add_argument("--brush-size", type=int, default=1,
                     help="落笔粗细 px（1=1px 铅笔；4-8 更像铅笔/炭笔画，需要画图窗口在前台）")
+    ap.add_argument("--step", type=float, default=0.0,
+                    help="line 模式按弧长重采样步长 px（0=关；2-4 让曲线顺滑）")
+    ap.add_argument("--smooth", type=int, default=0,
+                    help="line 模式平滑遍数（0=关；2-3 磨掉像素台阶）")
+    ap.add_argument("--join", type=float, default=0.0,
+                    help="端点相距多少 px 内就连成一条笔画（0=关；2-3 让线条连贯）")
     ap.add_argument("--brush-kind", default="Brush",
                     choices=["Brush", "Marker", "Crayon", "OilBrush", "WaterColor", "AirBrush"],
                     help="画图的笔形（Brush=画笔, Marker=记号笔, Crayon=蜡笔…）")
