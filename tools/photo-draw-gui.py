@@ -82,7 +82,8 @@ class App:
         self.log.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         self.log.configure(state="disabled")
 
-        tk.Label(root, text="提示：画之前先打开「画图」，窗口别最大化；画的过程中别抢鼠标。",
+        tk.Label(root, text="提示：先打开「画图」，窗口别最大化；真画前有 5 秒倒计时，"
+                            "画的过程中按 ESC 立刻停笔，别抢鼠标。",
                  fg="#8b93a7", bg=bg, font=("Microsoft YaHei UI", 9)).pack(anchor="w", padx=12, pady=(0, 10))
 
     # ---------- 工具 ----------
@@ -178,9 +179,11 @@ class App:
         if not messagebox.askokcancel("开始真画？",
                                       "接下来板子会真的控制鼠标在「画图」里画。\n\n"
                                       "· 请先打开画图、窗口别最大化\n"
-                                      "· 画的过程中别抢鼠标（抢了会抬笔跳过那一笔）\n\n继续？"):
+                                      "· 点确定后有 5 秒倒计时，按 ESC 取消\n"
+                                      "· 画的过程中按 ESC 立刻停笔\n"
+                                      "· 别抢鼠标（抢了会抬笔跳过那一笔）\n\n继续？"):
             return
-        self.run_cli(["--draw", "--progress", "50"])
+        self.run_cli(["--draw", "--progress", "50", "--stop-key", "esc"])
 
     def open_preview(self) -> None:
         if self.last_preview and os.path.isfile(self.last_preview):

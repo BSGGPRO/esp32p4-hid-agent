@@ -38,6 +38,7 @@ grid    像素风/图标：按网格采样，暗格子点一个点（小图专�
 from __future__ import annotations
 
 import argparse
+import ctypes
 import importlib.util
 import json
 import math
@@ -446,12 +447,28 @@ def counts_vec(dx: float, dy: float, table) -> tuple[int, int]:
     return (cx, cy)
 
 
+VK_ESCAPE = 0x1B
+
+
+def stop_requested() -> bool:
+    """用户按 ESC = 立刻停笔（PC 键盘；板子只发键、收不到键）。"""
+    try:
+        return bool(ctypes.windll.user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000)
+    except Exception:  # noqa: BLE001 - 非 Windows/受限环境就别拦
+        return False
+
+
 def run_strokes(b, strokes, args, table, paint_hwnd: int, log: list) -> dict:
     res = {"strokes_done": 0, "interruptions": 0, "aborted": False, "ms": 0}
     t0 = time.time()
     for si, pts in enumerate(strokes):
         if len(pts) < 2:
             continue
+        if args.stop_key and stop_requested():
+            res["aborted"] = True
+            res["reason"] = "用户按了 ESC，已停手"
+            log.append({"stroke": si, "event": "esc_stop"})
+            break
         if dr is not None and paint_hwnd and int(dr.foreground()) != int(paint_hwnd):
             res["aborted"] = True
             res["reason"] = "前台不再是画图窗口，已停手"
@@ -471,6 +488,14 @@ def run_strokes(b, strokes, args, table, paint_hwnd: int, log: list) -> dict:
                 b.bridge.mouse_move(*counts_vec(dx, dy, table))
                 prev = p
                 sent += 1
+                if args.stop_key and sent % 4 == 0 and stop_requested():
+                    b.bridge.mouse_btn("left", "up")
+                    down = False
+                    res["aborted"] = True
+                    res["reason"] = "用户按了 ESC，已停手"
+                    log.append({"stroke": si, "at": [round(p[0]), round(p[1])],
+                                "event": "esc_stop"})
+                    break
                 if args.anchor_every and sent % args.anchor_every == 0:
                     from brain import cursor_pos
                     ax, ay = cursor_pos()
@@ -488,6 +513,8 @@ def run_strokes(b, strokes, args, table, paint_hwnd: int, log: list) -> dict:
         finally:
             if down:
                 b.bridge.mouse_btn("left", "up")
+        if res.get("aborted"):
+            break
         res["strokes_done"] += 1
         if args.progress and si % args.progress == 0:
             print("   ... %d/%d 笔" % (si + 1, len(strokes)), file=sys.stderr, flush=True)
@@ -617,6 +644,10 @@ def main(argv=None) -> int:
     ap.add_argument("--draw", action="store_true", help="真的落笔（默认只规划）")
     ap.add_argument("--anchor-every", type=int, default=8, help="每 N 个顶点做一次闭环校正")
     ap.add_argument("--interfere-px", type=int, default=40, help="偏差超过它就判定用户抢鼠标")
+    ap.add_argument("--stop-key", default="esc", choices=["esc", "none"],
+                    help="按这个键立刻停笔（默认 esc；none=不检测）")
+    ap.add_argument("--no-countdown", action="store_true",
+                    help="真画前不倒数 5 秒（默认倒数，按 ESC 可取消）")
     ap.add_argument("--progress", type=int, default=0, help="每 N 笔打印进度（0=不打印）")
     ap.add_argument("--transport", default="tcp", choices=["tcp", "uart"])
     ap.add_argument("--out", default=None, help="预览/规划输出前缀")
@@ -736,6 +767,13 @@ def main(argv=None) -> int:
         return 0
 
     # ---- 真画 ----
+    if not a.no_countdown:
+        print("   5 秒后开始画，按 ESC 取消 …", file=sys.stderr, flush=True)
+        for _ in range(5):
+            time.sleep(1.0)
+            if a.stop_key and stop_requested():
+                print(json.dumps({"ok": False, "err": "已取消（按了 ESC）"}, ensure_ascii=False))
+                return 5
     from brain import Brain
     if dr is not None and paint_hwnd:
         if not dr.focus_hwnd(paint_hwnd):
