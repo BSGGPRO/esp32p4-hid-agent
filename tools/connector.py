@@ -30,7 +30,8 @@
                                           在区域里找一行字，存成变量（含中心点）
     see       q=<问题> [rect=..] [speed=fast|normal|fine] [longest=N] [max_new_tokens=32]
                                           speed: fast=长边480 / normal=640(默认) / fine=1280
-    vision    [action=status|start|stop]   常驻视觉服务的状态（首次 see 会自动拉起）
+    check     q=<问题> [rect=..] [speed=fast]   是非题：只让它回「是/否」，结果在 yes 字段
+    vision    [action=status|start|stop|unload] 常驻视觉服务（unload 立刻还显存，打游戏前用）
 
     recipe    name=wechat-send  to=<聊天> pieces=[py:拼音, raw:ascii]
               微信发消息（标题核对 → 清空输入框 → 拼音选字/直接敲 → 发前核对 → 回车 → 发后核对）
@@ -249,7 +250,45 @@ def _shot(rect=None, longest: int = 640):
     if max(im.size) > longest:
         s = longest / float(max(im.size))
         im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
+    # Qwen2.5-VL 的 patch 是 14、合并 2，任一边小于 28 像素直接报错
+    # （"height:26 must be larger than factor:28"）。任务栏这种又长又扁的条补白到 56。
+    if min(im.size) < 56:
+        w, h = im.size
+        canvas = Image.new("RGB", (max(w, 56), max(h, 56)), (255, 255, 255))
+        canvas.paste(im, (0, 0))
+        im = canvas
     return im
+
+
+_NEG = ("否", "不是", "不对", "没有", "不存在", "no", "not")
+_POS = ("是", "对", "有", "存在", "yes", "true")
+
+
+def _yesno(text: str):
+    """把模型的自由回答压成一个布尔。判不了返回 None（宁可报错，也不猜）。"""
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    for w in _NEG:                     # 先看否定词：「不是」里也有「是」
+        if w in t:
+            return False
+    for w in _POS:
+        if w in t:
+            return True
+    return None
+
+
+def check(question: str, rect=None, speed: str = "fast", max_new_tokens: int = 8) -> dict:
+    """是非题：只让它回答「是 / 否」。选择题比开放问答更快也更准。"""
+    prompt = "看图，只回答一个字：是 或 否。不要解释。问题：" + question
+    ans = see(prompt, rect, speed=speed, max_new_tokens=max_new_tokens)
+    yes = _yesno(ans)
+    if yes is None:                    # 答跑偏了就再问一次，这次给多一点思考空间
+        ans = see(prompt, rect, speed="normal", max_new_tokens=24)
+        yes = _yesno(ans)
+    if yes is None:
+        raise RuntimeError("问不出是/否（模型答：%r）" % (ans or "")[:60])
+    return {"yes": yes, "answer": ans}
 
 
 def see(question: str, rect=None, longest: int = 0, max_new_tokens: int = 200,
@@ -275,14 +314,14 @@ def _see_daemon(im, question: str, max_new_tokens: int):
 
         h = visiond._ping()
         if not h or not h.get("ready"):
-            visiond.start()
+            visiond.warm()               # 没起就起，被空转卸载过就装回来
         buf = io.BytesIO()
         im.save(buf, "PNG")
         body = json.dumps({"png_b64": base64.b64encode(buf.getvalue()).decode(),
                            "q": question, "mt": int(max_new_tokens)}).encode()
         req = urllib.request.Request("http://127.0.0.1:%d/see" % visiond.PORT, data=body,
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as r:
+        with urllib.request.urlopen(req, timeout=300) as r:
             out = json.loads(r.read().decode())
         if out.get("err"):
             return None
@@ -599,15 +638,28 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                     if st.get("as"):
                         vars[st["as"]] = ans
 
+                elif op == "check":
+                    # 是非题：只回答是/否。比开放问答快，也更容易核对
+                    r = check(st["q"], st.get("rect"), str(st.get("speed", "fast")),
+                              int(st.get("max_new_tokens", 8)))
+                    rec["yes"] = r["yes"]
+                    rec["answer"] = r["answer"]
+                    if _last.get("vision_ms") is not None:
+                        rec["ms"] = _last["vision_ms"]
+                    if st.get("as"):
+                        vars[st["as"]] = r["yes"]
+
                 elif op == "vision":
                     # 常驻服务的状态；action=start/stop 时顺带起停
                     import visiond
 
                     act = st.get("action", "status")
                     if act == "start":
-                        rec["result"] = visiond.start()
+                        rec["result"] = visiond.warm()
                     elif act == "stop":
                         rec["result"] = {"stopped": visiond.stop()}
+                    elif act == "unload":       # 立刻还显存（打游戏前）
+                        rec["result"] = visiond.unload()
                     else:
                         rec["result"] = visiond._ping(1.0) or {"ready": False}
 

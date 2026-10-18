@@ -37,9 +37,54 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
 PORT = int(os.environ.get("DSV_PORT", "8771"))
 HOST = "127.0.0.1"
+# 空转多久就把显卡还回去。用户要打游戏时，2.5 GB 显存比"下次问话慢 20 秒"值钱得多。
+IDLE_UNLOAD = float(os.environ.get("DSV_IDLE_UNLOAD", "180"))
 _lock = threading.Lock()          # 显卡：一次只让一个推理进去
 _ocr_lock = threading.Lock()      # CPU：OCR 独立排队
-_state = {"ready": False, "model": None, "vram_mb": 0, "ocr": None, "ocr_ready": False}
+_load_lock = threading.Lock()     # 加载/卸载互斥
+_state = {"ready": False, "model": None, "vram_mb": 0, "ocr": None, "ocr_ready": False,
+          "last_used": 0.0}
+
+
+def _free_model() -> None:
+    """把视觉模型和它的显存还回去（OCR 是 CPU 的，留着无所谓）。"""
+    with _load_lock:
+        if not _state["ready"]:
+            return
+        _state["model"] = None
+        _state["ready"] = False
+        _state["vram_mb"] = 0
+        try:
+            import gc
+
+            import torch
+
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+        except Exception:                   # noqa: BLE001
+            pass
+
+
+def _ensure_loaded() -> None:
+    """要用了才加载（被空转卸载过就再装回来）。"""
+    if _state["ready"]:
+        return
+    with _load_lock:
+        if _state["ready"]:
+            return
+        _load()
+
+
+def _idle_watch() -> None:
+    """空转超过 IDLE_UNLOAD 秒就把模型卸掉，把显存还给用户。"""
+    while True:
+        time.sleep(10)
+        if not _state["ready"] or not IDLE_UNLOAD:
+            continue
+        idle = time.time() - (_state["last_used"] or time.time())
+        if idle >= IDLE_UNLOAD:
+            _free_model()
 
 
 def _load():
@@ -54,6 +99,7 @@ def _load():
     _state["model"] = (m, AutoProcessor.from_pretrained(MODEL_ID))
     _state["vram_mb"] = int(torch.cuda.memory_allocated() / 1048576)
     _state["ready"] = True
+    _state["last_used"] = time.time()
     # 先跑一次空的：把 CUDA 上下文、cuBLAS 句柄这些一次性开销在启动时付掉，
     # 否则第一句真问题会多等一两秒。
     try:
@@ -138,6 +184,7 @@ def _answer(png: bytes, question: str, mt: int) -> str:
     from PIL import Image
 
     model, proc = _state["model"]
+    _state["last_used"] = time.time()
     im = Image.open(io.BytesIO(png)).convert("RGB")
     msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}]
     text = proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
@@ -163,18 +210,28 @@ def _serve() -> None:
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path.startswith("/health"):
+                idle = int(time.time() - (_state["last_used"] or time.time())) if _state["ready"] else 0
                 self._send(200, {"ready": _state["ready"], "ocr": _state["ocr_ready"],
                                  "model": MODEL_ID, "vram_mb": _state["vram_mb"],
+                                 "idle_s": idle, "idle_unload_s": int(IDLE_UNLOAD),
                                  "pid": os.getpid()})
             else:
                 self._send(404, {"err": "unknown"})
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
-            if path not in ("/see", "/ocr"):
+            if path not in ("/see", "/ocr", "/warm", "/unload"):
                 self._send(404, {"err": "unknown"})
                 return
             try:
+                if path == "/unload":            # 立刻把显存还回去（打游戏前用）
+                    _free_model()
+                    self._send(200, {"ready": _state["ready"], "vram_mb": _state["vram_mb"]})
+                    return
+                if path == "/warm":              # 预热：后台加载，请求立刻返回
+                    threading.Thread(target=_ensure_loaded, daemon=True).start()
+                    self._send(200, {"loading": not _state["ready"]})
+                    return
                 n = int(self.headers.get("Content-Length") or 0)
                 req = json.loads(self.rfile.read(n) or b"{}")
                 png = base64.b64decode(req["png_b64"])
@@ -183,10 +240,8 @@ def _serve() -> None:
                     rows = _ocr_rows(png)
                     self._send(200, {"rows": rows, "ms": int((time.time() - t0) * 1000)})
                     return
+                _ensure_loaded()                 # 被空转卸载过就在这里装回来
                 with _lock:                      # 单卡，串行；并发请求排队而不是抢显存
-                    if not _state["ready"]:
-                        self._send(503, {"err": "loading"})
-                        return
                     a = _answer(png, req.get("q", "描述这张图"), req.get("mt", 32))
                 self._send(200, {"a": a, "ms": int((time.time() - t0) * 1000)})
             except Exception as exc:             # noqa: BLE001 — 服务不因单次请求死掉
@@ -198,6 +253,7 @@ def _serve() -> None:
     srv = ThreadingHTTPServer((HOST, PORT), H)
     threading.Thread(target=_load, daemon=True).start()
     threading.Thread(target=_load_ocr, daemon=True).start()   # 两个引擎并行加载
+    threading.Thread(target=_idle_watch, daemon=True).start()  # 空转就把显存还回去
     srv.serve_forever()
 
 
@@ -209,16 +265,52 @@ def _ping(timeout: float = 0.4) -> dict | None:
         return None
 
 
+def _post(path: str, body: dict | None = None, timeout: float = 200) -> dict | None:
+    try:
+        data = json.dumps(body or {}).encode()
+        req = urllib.request.Request(f"http://{HOST}:{PORT}{path}", data=data,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except Exception:                            # noqa: BLE001
+        return None
+
+
+def warm(wait_s: int = 120) -> dict:
+    """确保模型在显存里：没加载就让服务去加载，等它就绪。"""
+    h = _ping(1.0)
+    if not h:
+        return start(wait_s)
+    if h.get("ready"):
+        return h
+    _post("/warm", timeout=5)
+    t0 = time.time()
+    while time.time() - t0 < wait_s:
+        h = _ping(1.0)
+        if h and h.get("ready"):
+            return h
+        time.sleep(0.5)
+    raise RuntimeError(f"视觉模型 {wait_s}s 内没加载完")
+
+
+def unload() -> dict:
+    """立刻释放显存（打游戏前跑一下）。进程和 OCR 还留着。"""
+    r = _post("/unload", timeout=30)
+    return r or {"ready": None}
+
+
 def _port_free() -> bool:
     with socket.socket() as s:
         return s.connect_ex((HOST, PORT)) != 0
 
 
 def start(wait_s: int = 120) -> dict:
-    """后台起服务并等就绪。已经在跑就直接返回。"""
+    """后台起服务并等就绪。已经在跑就直接返回；跑了但模型被卸了就让它装回来。"""
     h = _ping()
     if h:
-        return h
+        if h.get("ready"):
+            return h
+        return warm(wait_s)
     import subprocess
     flags = 0
     if os.name == "nt":
@@ -256,6 +348,8 @@ def main(argv: list[str]) -> int:
         print(json.dumps(start(), ensure_ascii=False))
     elif cmd == "--stop":
         print("stopped" if stop() else "not running")
+    elif cmd == "--unload":
+        print(json.dumps(unload(), ensure_ascii=False))
     else:
         h = _ping(1.0)
         print(json.dumps(h or {"ready": False}, ensure_ascii=False))

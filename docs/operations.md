@@ -53,11 +53,13 @@ hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221
 ```
 
 操作：`restore` / `focus` / `title` / `key` / `type` / `click` / `point` / `move` / `drag` /
-`drag_path` / `hold` / `scroll` / `wait` / `look` / `ocr` / `find` / `see` / `vision` / `diff` /
-`wait_change` / `read_text` / `clip` / `launch` / `recipe`。
+`drag_path` / `hold` / `scroll` / `wait` / `look` / `ocr` / `find` / `see` / `check` / `vision` /
+`diff` / `wait_change` / `read_text` / `clip` / `launch` / `recipe`。
 
 - 视觉模型和 OCR 引擎都跑在**常驻服务**里（`tools/visiond.py`）：各只加载一次，之后每次提问
   1 秒级、读字百毫秒级；第一次 `see` / `ocr` 会自动把它拉起来。冷启动约 25 秒，别误当成卡死。
+- **显存会还**：模型空转 3 分钟自动卸载（进程和 OCR 留着），下次用自动装回。
+  打游戏前想立刻还：`python tools/visiond.py --unload`（实测全卡 3780 → 1171 MiB）。
 - 读字要快：`{"op":"ocr","rect":[x0,y0,x1,y1]}` 小框约 0.12 秒；框越小越快，别整屏 OCR。
 - 答题要快：`{"op":"see","q":"...","rect":[...],"speed":"fast"}` 约 1.2 秒（fast=480 长边），
   默认 640 约 1.7 秒，`speed:"fine"` 才用 1280（3~4 秒）。

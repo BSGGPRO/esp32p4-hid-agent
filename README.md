@@ -58,16 +58,16 @@ echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]
 
 ---
 
-## 连接器：一个文件，24 个操作
+## 连接器：一个文件，25 个操作
 
 `tools/connector.py` 从 stdin 读作业、打印结果、**不落任何文件**。每个操作都能带 `require`，不满足就中止。
 
 | 类别 | 操作 | 说明 |
 |---|---|---|
 | 窗口 | `restore` `focus` `title` | 还原 / 置前 / 读标题（以 Win32 为准） |
-| 键鼠 | `click` `move` `point` `drag` `drag_path` `hold` `scroll` `key` `type` | `point` 是闭环定位，自己纠偏到目标像素 |
+| 键鼠 | `click` `move` `point` `drag` `drag_path` `hold` `scroll` `key` `type` | `point` 是闭环定位，自己纠偏到目标像素；`click`/`move`/`point` 都认 `on=<find 变量>` |
 | 观察 | `look` `ocr` `find` `diff` `wait_change` `read_text` | `find` 在区域里找一段文字并返回中心点 |
-| 视觉 | `see` `vision` | 可选：本地视觉模型回答「这块区域是什么」，见下 |
+| 视觉 | `see` `check` `vision` | `check` 是是非题（只答「是/否」）；`vision action=unload` 立刻还显存 |
 | 系统 | `clip` `launch` `wait` | 剪贴板读写 / 启动程序 / 等待 |
 | 组合 | `recipe` | `wechat-send`、`open-url` —— 带完整核对的成品动作 |
 
@@ -101,6 +101,22 @@ python tools/visiond.py --status    # 在不在、OCR 和视觉各自就绪没�
 
 **用 OCR 能回答的问题别问模型。** 文字、按钮名、坐标用 `ocr` / `find`，百毫秒级且不会瞎猜；
 `see` 只用来回答「这是什么界面」「现在卡在哪个状态」这类模糊问题，而且是裁小图问。
+
+### 显存会还给你（打游戏不卡）
+
+视觉模型常驻要吃 2.5 GB 显存，本机是 8 GB 的笔记本卡，打游戏时这是实打实的一截。
+所以：**空转 3 分钟自动卸载**（进程和 OCR 还留着，OCR 走 CPU 不占显存），
+下次 `see` / `check` 自动装回来（约 25 秒一次）。
+
+```bash
+python tools/visiond.py --unload     # 立刻还显存（开游戏前跑一下）
+python tools/visiond.py --stop       # 连进程一起关（OCR 也停）
+python tools/visiond.py --status     # 看模型现在在不在显存里
+```
+
+实测（同一时刻前后）：`nvidia-smi` 全卡占用 **3780 MiB → 1171 MiB**，卸掉 2609 MB。
+算力上：闲置时它就躺在那不跑推理，不掉帧；真正会掉帧的是你正玩着的时候恰好有个作业
+在问模型——那种情况现在只会发生在你明确让它看东西的时候。
 
 
 成品动作示例（微信发一条中英混排消息，含标题核对与发后核对）：

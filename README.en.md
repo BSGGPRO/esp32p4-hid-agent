@@ -111,6 +111,22 @@ Two traps found by measuring, both documented in the code comments:
 `ocr` / `find` — milliseconds, and they do not guess. `see` is for fuzzy questions like
 "which screen is this" or "what is it stuck on", and it gets a small crop, not the whole desktop.
 
+### It gives the VRAM back (so gaming stays smooth)
+
+The resident vision model holds 2.5 GB of VRAM — a real slice of an 8 GB laptop GPU while you
+game. So it **unloads itself after 3 idle minutes** (the process and the OCR engine stay; OCR is
+CPU-only), and the next `see` / `check` loads it again (~25 s, once).
+
+```bash
+python tools/visiond.py --unload     # free VRAM now (run this before a game)
+python tools/visiond.py --stop       # stop the process too (OCR dies with it)
+python tools/visiond.py --status     # is the model currently resident?
+```
+
+Measured back to back: `nvidia-smi` whole-card usage **3780 MiB → 1171 MiB** (2609 MB freed).
+On compute: idle it runs nothing, so it does not cost frames; frames only drop if a job asks
+the model something *while you are playing* — which now only happens when you ask for it.
+
 ---
 
 ## Image → drawing
