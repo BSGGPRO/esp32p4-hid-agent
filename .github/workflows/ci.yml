@@ -1,0 +1,36 @@
+name: ci
+
+# 只跑不需要板子的部分：语法、纯逻辑、文档与代码一致性、链接。
+# 真机回归（点鼠标、看屏幕、串口）跑不了，也不该在这里假装跑。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: windows-latest        # 连接器 ctypes 直调 user32/kernel32，只能在 Windows 上导入
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 装依赖（只装截图需要的 Pillow）
+        run: python -m pip install --upgrade pip Pillow
+
+      - name: 冒烟测试（语法 / 纯逻辑 / 文档与代码一致）
+        run: python tests/smoke.py
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 文档相对链接
+        run: python tests/links.py

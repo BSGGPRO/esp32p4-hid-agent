@@ -6,6 +6,10 @@ Turn an **ESP32-P4 dev board** into a **standard USB keyboard + mouse** for a Wi
 then drive it with a **JSON connector**: screenshot → decide → move the mouse / type → screenshot again to verify.
 Hardware-level input, no driver, no software injection.
 
+**Why not just use software automation?** Because to the target application this *is* a real
+keyboard and mouse: no driver, no injection, no debug port, no cooperation from the target needed.
+Windows sees it exactly like the keyboard on your desk.
+
 ```
    ┌──────────────┐   USB HID (keyboard+mouse)  ┌──────────────┐
    │  ESP32-P4    │ ──────────────────────────▶ │   Windows    │
@@ -16,6 +20,36 @@ Hardware-level input, no driver, no software injection.
    │ board, prints the result                                  │
    └───────────────────────────────────────────────────────────┘
 ```
+
+## The 30-second version
+
+| | |
+|---|---|
+| **Hardware** | one ESP32-P4 dev board (USB HID + UART), one USB cable, one Windows machine |
+| **Software** | Python 3.12 + Pillow; OCR optional (needed to read text off the screen); vision model optional (needed to *understand* a UI) |
+| **How you use it** | pipe a JSON job into `connector.py`'s stdin; it plays the job on the board and prints JSON |
+| **When something is off** | every step can verify itself; a failed check **aborts the whole job**, it never keeps typing through an error |
+
+```bash
+git clone https://github.com/BSGGPRO/esp32p4-hid-agent.git && cd esp32p4-hid-agent
+python -m pip install -r pc/requirements.txt
+python tools/connector.py --selfcheck          # screen / OCR / board / pointer / vision
+
+# move the cursor to (1200,600), then read the text in the top-left corner
+echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]}]}' \
+  | python tools/connector.py
+```
+
+## What you can do with it
+
+All of these have actually been run, not just planned (measured timings [below](#how-fast-is-take-a-look)):
+
+| Scenario | One job |
+|---|---|
+| **Send a WeChat message** | `{"op":"recipe","name":"wechat-send","to":"文件传输助手","pieces":["py:nihao"]}` — checks the chat header, clears the box, picks IME candidates, verifies before Enter, then verifies the bubble after |
+| **Open a URL** | `{"op":"recipe","name":"open-url","url":"https://github.com"}` — new tab if a browser is open, Win+R otherwise, then verifies the window title |
+| **Drive an app you have never seen** | `{"op":"ui","exe":"cloudmusic"}` — returns the window's text lines plus candidate buttons with screen coordinates, so icon-only buttons can be located too |
+| **Skip a track** | `ui` finds the button → `click` → verify by the window title |
 
 ---
 
