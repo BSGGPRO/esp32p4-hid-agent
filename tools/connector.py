@@ -154,6 +154,16 @@ def _tmp(name: str) -> str:
     return os.path.join(TMP, "_conn_%d_%s.png" % (os.getpid(), name))
 
 
+def _cleanup_tmp() -> None:
+    for name in ("full", "crop", "see"):
+        p = _tmp(name)
+        if os.path.exists(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 def _screen():
     """整屏画面（带缓存）。"""
     now = time.time()
@@ -639,13 +649,7 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                 brain.release()
             except Exception:  # noqa: BLE001
                 pass
-        for name in ("full", "crop", "see"):
-            p = _tmp(name)
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+        _cleanup_tmp()
 
 
 def selfcheck(transport: str = "tcp") -> dict:
@@ -705,6 +709,7 @@ def selfcheck(transport: str = "tcp") -> dict:
     add("板子连接", lambda: board())
     add("指针校准", profile, hard=False)
     add("视觉服务", vision, hard=False)
+    _cleanup_tmp()
     hard_fail = [c for c in checks if not c["ok"] and c.get("hard", True)]
     return {"ok": not hard_fail, "checks": checks}
 
