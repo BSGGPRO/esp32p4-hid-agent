@@ -43,7 +43,17 @@ PRESETS = {
 }
 
 
+def _utf8_stdio() -> None:
+    """Windows 控制台默认 GBK，中文/符号输出会 UnicodeEncodeError；统一改成 UTF-8。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def main(argv=None) -> int:
+    _utf8_stdio()
     ap = argparse.ArgumentParser(description="照片 -> 画（默认只预览，--draw 才落笔）")
     ap.add_argument("photo", help="照片路径（png/jpg/webp/bmp/tif…）")
     ap.add_argument("--quality", default="good", choices=sorted(PRESETS), help="质量档位")

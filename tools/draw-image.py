@@ -707,7 +707,17 @@ def ink_report(after_path: str, box, before_path: str | None) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+def _utf8_stdio() -> None:
+    """Windows 控制台默认 GBK，中文/符号输出会 UnicodeEncodeError；统一改成 UTF-8。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def main(argv=None) -> int:
+    _utf8_stdio()
     ap = argparse.ArgumentParser(description="把图片/文字折线画进画图（先预览，--draw 才落笔）")
     ap.add_argument("image", nargs="?", help="图片路径（任意格式先跑 tools/ingest-image.py）")
     ap.add_argument("--from-plan", default=None,
