@@ -338,10 +338,10 @@ Content-Type: application/json
 
 ```powershell
 # 不需要真板子、不需要浏览器；会自己拉起/关闭一个离线模式的 hub
-& $PY docs\evidence\web-selftest.py
+$PY tests\web_selftest.py
 ```
 
-最近一次结果：**69/69 PASS**（证据 [web-selftest.log](evidence/web-selftest.log)）。覆盖：
+最近一次结果：**70/70 PASS**（脚本在 `tests/web_selftest.py`，随仓库分发，谁都能跑）。覆盖：
 
 1. **前端静态检查**：三个文件存在、相对路径引用、69 个关键元素 id、app.js 引用的 id 全部存在、
    `api/board`/`api/pc`、1 s 轮询、超时标灰、三种离线原因、透传中提示、v1.2 stats 全字段
@@ -356,20 +356,20 @@ Content-Type: application/json
    连上即断的恶意客户端不影响 accept 循环、第二个客户端被拒绝、断开后 stats 自动恢复
    —— 专门锁住旧版「8766 挂死 / CloseWait 堵死 accept」缺陷。
 
-真机联调（live hub + COM7 + v1.2 固件）：
+真机联调（live hub + COM7 + v1.2 固件）。下面的原始记录跑在真机上、里面有桌面截图，
+所以**留在那台机器上、不随仓库分发**（`docs/evidence/` 被 gitignore），这里只留结论：
 
-- [web-board-online.txt](evidence/web-board-online.txt)：**22/22 PASS**。`/api/board` ok=true、
+- `web-board-online.txt`：**22/22 PASS**。`/api/board` ok=true、
   `stats.proto=v1.2`、CPU/内存/任务/SD/网络/HID/UART 字段齐全、页面读取的 30 条字段路径全在顶层；
   8766 透传 ping+stats 两轮真实回包（原始字节 1341 B，>512 B 长行不截断）；断开后轮询恢复；
   `/api/pc` 同时可用。
-- [web-board-raw.json](evidence/web-board-raw.json)：真机 `/api/board` 原始响应（可直接当解析样例）。
-- [web-hub-fixes.txt](evidence/web-hub-fixes.txt)：GBK 解码、NPU/GPU 探测、`lan_ips`、防火墙提示、
-  行缓冲等修复的本地验证输出。
+- `web-board-raw.json`：真机 `/api/board` 原始响应（可直接当解析样例）。
+- `web-hub-fixes.txt`：GBK 解码、NPU/GPU 探测、`lan_ips`、防火墙提示、行缓冲等修复的本地验证输出。
 
-其它原始证据：
+其它原始证据（同样不随仓库分发）：
 
-- [web-hub-curls.txt](evidence/web-hub-curls.txt)：离线路径真实 curl 输出（静态页头、两个 API、health、OPTIONS、404、shutdown）。
-- [web-preview.txt](evidence/web-preview.txt)：`python -m http.server` 纯静态预览（此时 api 404，页面进离线态）。
+- `web-hub-curls.txt`：离线路径真实 curl 输出（静态页头、两个 API、health、OPTIONS、404、shutdown）。
+- `web-preview.txt`：`python -m http.server` 纯静态预览（此时 api 404，页面进离线态）。
 
 **边界（诚实说明）**：
 

@@ -93,6 +93,17 @@ Flashing details (driver source, parameters, recovery) are in
 Output is always JSON: `{"ok": true, "steps": [...], "vars": {...}}`.
 **If any step fails to verify, the whole job aborts** — it never keeps pressing keys after a mismatch.
 
+## Tests (no board needed)
+
+```bash
+python tests/smoke.py          # syntax, pure logic, and "the op count in the README == the ops the code handles"
+python tests/web_selftest.py   # 70 dashboard checks: static page + offline hub, no board involved
+python tests/links.py          # relative links in the docs (only files actually tracked by git count)
+```
+
+All three run on every push in GitHub Actions (`windows-latest` + `ubuntu-latest`).
+The real-hardware regression (clicking, reading the screen, serial) is not run here — that one only runs on a real machine.
+
 ---
 
 ## The connector: one file, 26 operations

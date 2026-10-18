@@ -89,6 +89,17 @@ echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]
 输出永远是 JSON：`{"ok": true, "steps": [...], "vars": {...}}`。
 **任何一步核对不上就整单失败并停手**，不会带着错误继续动键鼠。
 
+## 跑测试（不需要板子）
+
+```bash
+python tests/smoke.py          # 语法、纯逻辑、以及「README 写的操作数 = 代码里认的操作数」
+python tests/web_selftest.py   # 仪表盘 70 项：静态页检查 + 离线拉起 hub 打接口，不碰板子
+python tests/links.py          # 文档里的相对链接（只认 git 里真实存在的文件）
+```
+
+这三条都在 GitHub Actions 上每次推送自动跑（`windows-latest` + `ubuntu-latest`）。
+要点鼠标、看屏幕、过串口的真机回归不在这里跑——那套只在真机上做。
+
 ---
 
 ## 连接器：一个文件，26 个操作

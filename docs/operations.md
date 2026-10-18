@@ -223,7 +223,7 @@ cd /d <repo>
 
 | 文件 | 内容 |
 |---|---|
-| `docs/agent-handoff.md` | 本文（交接说明） |
+| `docs/operations.md` | 本文（操作清单与写作业的规矩） |
 | `HANDOFF-TO-AI.txt`（仓库根） | **全量单文件版**：一个文件包含交接/接口/画图流程/协议速查/板子事实/排障，直接发给另一个 AI |
 | `docs/protocol.md` | 串口 JSON 协议（帧格式/命令/错误码/安全语义） |
 | `docs/brain-usage.md` | brain.py 动作层详解与示例脚本 |

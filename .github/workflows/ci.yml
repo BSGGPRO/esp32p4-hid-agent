@@ -25,6 +25,9 @@ jobs:
       - name: 冒烟测试（语法 / 纯逻辑 / 文档与代码一致）
         run: python tests/smoke.py
 
+      - name: 仪表盘自检（离线拉起 hub，不碰板子）
+        run: python tests/web_selftest.py
+
   docs:
     runs-on: ubuntu-latest
     steps:
