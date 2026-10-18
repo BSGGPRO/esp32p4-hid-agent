@@ -1,6 +1,6 @@
-# 交接说明：让另一个 AI 操控这块 ESP32-P4 板子（USB 键鼠）
+# 操作手册：用这块 ESP32-P4 板子操控 Windows（USB 键鼠）
 
-> 给接手方的 5 分钟说明。读完你就能：截屏 → 定位 → 点击/拖拽 → 打字 → 验证结果。
+> 5 分钟上手。读完你就能：截屏 → 定位 → 点击/拖拽 → 打字 → 验证结果。
 > 板子是 **USB HID 复合设备（键盘+鼠标）**，插在这台 Windows 上，等于一只"电子的手"。
 
 ---
@@ -53,10 +53,13 @@ hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221
 ```
 
 操作：`restore` / `focus` / `title` / `key` / `type` / `click` / `point` / `move` / `drag` /
-`drag_path` / `hold` / `scroll` / `wait` / `look` / `ocr` / `find` / `see` / `diff` /
+`drag_path` / `hold` / `scroll` / `wait` / `look` / `ocr` / `find` / `see` / `vision` / `diff` /
 `wait_change` / `read_text` / `clip` / `launch` / `recipe`。
 
-- 视觉模型按需加载：一次作业里多个 `see` 只加载一次；模型缓存在本地，离线加载即可。
+- 视觉模型跑在**常驻服务**里（`tools/visiond.py`）：模型只加载一次，之后每次提问 1 秒级；
+  第一次 `see` 会自动把它拉起来。冷启动 22 秒，别误当成卡死。
+- 答题要快：`{"op":"see","q":"...","rect":[...],"longest":480,"max_new_tokens":32}` 约 0.7 秒。
+- 能用 `ocr` / `find` 回答的别问模型：文字和坐标以 OCR 为准，模型只做判断题。
 - 模型会把「任务栏里有某图标」说成「前台是某程序」——前台窗口这类事实用 Win32 查。
 
 ### 安全红线
@@ -70,7 +73,15 @@ hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221
 
 ---
 
-## 1. 自检（5 条命令，跑通 = 你已接上）
+## 1. 自检（先跑一条，再按需看单条）
+
+```bat
+cd /d <repo>
+:: ⓪ 一条命令看五项（屏幕 / OCR / 板子 / 指针 / 视觉），全过则退出码 0
+"%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe" tools\connector.py --selfcheck
+```
+
+然后是按需的单条：
 
 ```bat
 cd /d <repo>
@@ -78,7 +89,7 @@ cd /d <repo>
 :: ① 板子活着 + 屏幕/光标信息
 "%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe" pc\brain.py --transport tcp --json info
 
-:: ② 截一张屏（多模态 AI 的"眼睛"）
+:: ② 截一张屏（眼睛）
 ...\python.exe pc\brain.py --transport tcp --json look
 ::  → 生成 pc\shot.png（2560x1440），JSON 里有 path/宽高/光标/前台窗口/窗口列表
 

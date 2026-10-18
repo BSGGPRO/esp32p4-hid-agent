@@ -151,6 +151,10 @@ code {
 
 .btn-small { padding: 8px 12px; font-size: 12.5px; }
 
+/* 语言切换：复用按钮外观，只把原生 select 的箭头配色对齐深色主题 */
+.lang-select { padding-right: 8px; color-scheme: dark; }
+.lang-select option { background: #131a24; color: var(--text); }
+
 /* ---------------- 主网格 ---------------- */
 /* 页面只剩板子面板（2026-10-18 移除本机面板），单栏占满宽度 */
 .grid {

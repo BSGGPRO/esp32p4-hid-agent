@@ -27,7 +27,9 @@
     ocr       rect=[x0,y0,x1,y1]          逐行文字+坐标（RapidOCR，秒级）
     find      text=<...> [rect=..] [thresh=0.7] [as=名字]
                                           在区域里找一行字，存成变量（含中心点）
-    see       q=<问题> [rect=..] [as=名字] 让本地 Qwen2.5-VL 看一眼（懒加载，20s 起）
+    see       q=<问题> [rect=..] [longest=640] [max_new_tokens=32]
+                                          问一句"这是什么"。小图短答约 1 秒，越大越慢
+    vision    [action=status|start|stop]   常驻视觉服务的状态（首次 see 会自动拉起）
 
     recipe    name=wechat-send  to=<聊天> pieces=[py:拼音, raw:ascii]
               微信发消息（标题核对 → 清空输入框 → 拼音选字/直接敲 → 发前核对 → 回车 → 发后核对）
@@ -35,6 +37,8 @@
               开浏览器到某网址（开着就 Ctrl+T 新标签，没开就 Win+R 交给系统，最后核对标题）
 
 变量（as=）之后可以用 on=<名字>（点击）。
+
+自检：`python tools/connector.py --selfcheck` 一次报出屏幕/OCR/板子/指针/视觉五项状态。
 
 铁律照旧：不动用户窗口大小位置；核对不上就停；退出前一定释放板子。
 """
@@ -67,6 +71,7 @@ TMP = os.environ.get("TEMP", ".")
 ZERO = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
 _ocr_engine = None
 _vlm = None      # (model, processor)，只有 see 用到才加载
+_last = {}       # 最近一次的耗时等观测值，给 vision 操作回报
 
 
 def clean(s: str) -> str:
@@ -154,11 +159,61 @@ def ocr(rect) -> list:
     return out
 
 
+def _shot(rect=None, longest: int = 1280):
+    """截屏 + 裁剪 + 缩小。整屏直接喂模型又慢又容易编，先裁到关心的那块。"""
+    from PIL import Image
+
+    path = eyes.capture(os.path.join(TMP, "_conn_see.png")).path
+    im = Image.open(path).convert("RGB")
+    if rect:
+        im = im.crop(tuple(int(v) for v in rect))
+    if max(im.size) > longest:
+        s = longest / float(max(im.size))
+        im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
+    return im
+
+
 def see(question: str, rect=None, longest: int = 1280, max_new_tokens: int = 200) -> str:
-    """本地 Qwen2.5-VL-3B（4bit）。第一次调用会花 ~20s 加载，之后每问几秒。"""
+    """问一句"这是什么"。优先走常驻视觉服务（模型只加载一次，1~2 秒）；服务不在就退回落本地加载。"""
+    im = _shot(rect, longest)
+    ans = _see_daemon(im, question, max_new_tokens)
+    if ans is not None:
+        return ans
+    return _see_local(im, question, max_new_tokens)
+
+
+def _see_daemon(im, question: str, max_new_tokens: int):
+    """发给 visiond，返回答案；服务起不来或出错返回 None（调用方退回落本地）。"""
+    import base64
+    import io
+    import urllib.request
+
+    try:
+        import visiond
+
+        h = visiond._ping()
+        if not h or not h.get("ready"):
+            visiond.start()
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        body = json.dumps({"png_b64": base64.b64encode(buf.getvalue()).decode(),
+                           "q": question, "mt": int(max_new_tokens)}).encode()
+        req = urllib.request.Request("http://127.0.0.1:%d/see" % visiond.PORT, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            out = json.loads(r.read().decode())
+        if out.get("err"):
+            return None
+        _last["vision_ms"] = out.get("ms")
+        return out.get("a") or ""
+    except Exception:  # noqa: BLE001 — 服务只是加速手段，不该成为失败点
+        return None
+
+
+def _see_local(im, question: str, max_new_tokens: int) -> str:
+    """没有常驻服务时的退路：本进程加载一次 4bit 模型（约 20 秒）。"""
     global _vlm
     import torch
-    from PIL import Image
     from transformers import (AutoProcessor, BitsAndBytesConfig,
                               Qwen2_5_VLForConditionalGeneration)
 
@@ -171,13 +226,6 @@ def see(question: str, rect=None, longest: int = 1280, max_new_tokens: int = 200
         _vlm = (m, AutoProcessor.from_pretrained(mid))
 
     model, proc = _vlm
-    path = eyes.capture(os.path.join(TMP, "_conn_see.png")).path
-    im = Image.open(path).convert("RGB")
-    if rect:
-        im = im.crop(tuple(int(v) for v in rect))
-    if max(im.size) > longest:
-        s = longest / float(max(im.size))
-        im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
     msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}]
     text = proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
     inputs = proc(text=[text], images=[im], return_tensors="pt").to("cuda")
@@ -456,8 +504,22 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                     ans = see(st["q"], st.get("rect"), int(st.get("longest", 1280)),
                               int(st.get("max_new_tokens", 200)))
                     rec["answer"] = ans
+                    if _last.get("vision_ms") is not None:
+                        rec["ms"] = _last["vision_ms"]
                     if st.get("as"):
                         vars[st["as"]] = ans
+
+                elif op == "vision":
+                    # 常驻服务的状态；action=start/stop 时顺带起停
+                    import visiond
+
+                    act = st.get("action", "status")
+                    if act == "start":
+                        rec["result"] = visiond.start()
+                    elif act == "stop":
+                        rec["result"] = {"stopped": visiond.stop()}
+                    else:
+                        rec["result"] = visiond._ping(1.0) or {"ready": False}
 
                 elif op == "recipe":
                     name = st.get("name")
@@ -502,7 +564,72 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                     pass
 
 
+def selfcheck(transport: str = "tcp") -> dict:
+    """一条命令回答"这台机器现在能不能用"。任何一项硬检查失败就返回 ok=false。"""
+    checks = []
+
+    def add(name, fn, hard=True):
+        t0 = time.time()
+        try:
+            detail = fn()
+            checks.append({"check": name, "ok": True, "ms": int((time.time() - t0) * 1000),
+                           "detail": detail})
+        except Exception as e:  # noqa: BLE001
+            checks.append({"check": name, "ok": False, "hard": hard,
+                           "err": "%s: %s" % (type(e).__name__, e)})
+
+    def screen():
+        w, h = screen_size()
+        p = eyes.capture(os.path.join(TMP, "_conn_full.png")).path
+        from PIL import Image
+
+        im = Image.open(p)
+        if im.width < 640:
+            raise RuntimeError("截到的图只有 %dx%d，不对劲" % (im.size))
+        return {"logical": [w, h], "shot": list(im.size)}
+
+    def ocr_ok():
+        rows = ocr([0, 0, min(600, screen_size()[0]), 200])
+        return {"engine": "rapidocr", "rows": len(rows)}
+
+    def board():
+        b = _brain(transport)
+        try:
+            info = b.info()
+        finally:
+            b.release()
+        return {"transport": transport, "info": info}
+
+    def vision():
+        import visiond
+
+        h = visiond._ping(1.0)
+        if not h:
+            raise RuntimeError("没在跑（首次 see 会自动起，或 visiond.py --start）")
+        if not h.get("ready"):
+            raise RuntimeError("起来了但模型还没加载完")
+        return h
+
+    def profile():
+        p = r"C:\ProgramData\dsh\pointer-profile.json"
+        if not os.path.exists(p):
+            raise RuntimeError("没有指针校准文件，point 会不准")
+        return {"path": p}
+
+    add("屏幕截取", screen)
+    add("OCR 引擎", ocr_ok)
+    add("板子连接", lambda: board())
+    add("指针校准", profile, hard=False)
+    add("视觉服务", vision, hard=False)
+    hard_fail = [c for c in checks if not c["ok"] and c.get("hard", True)]
+    return {"ok": not hard_fail, "checks": checks}
+
+
 def main() -> int:
+    if "--selfcheck" in sys.argv:
+        out = selfcheck(os.environ.get("CONNECTOR_TRANSPORT", "tcp"))
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0 if out["ok"] else 1
     raw = sys.stdin.read()
     if not raw.strip():
         print(json.dumps({"ok": False, "err": "stdin 里没有作业 JSON"}, ensure_ascii=False))

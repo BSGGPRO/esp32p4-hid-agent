@@ -1,5 +1,7 @@
 # esp32p4-hid-agent
 
+**中文** | [English](README.en.md)
+
 把一块 **ESP32-P4 开发板**变成这台 Windows 上的**标准 USB 键鼠**，再用一个 **JSON 连接器**把它用起来：
 截屏 → 判断 → 动鼠标 / 敲键盘 → 再截屏核对。硬件输入、零驱动、不碰任何软件注入。
 
@@ -19,11 +21,13 @@
 
 ```bash
 # 0) Windows + Python 3.12；板子的两个口都插上（见「接线」）
-# 1) 起服务（占串口，提供 TCP 透传 + 网页仪表盘），再自检
+# 1) 起服务（占串口，提供 TCP 透传 + 网页仪表盘）
 python pc/hub.py                                 # http://127.0.0.1:8765 · TCP 127.0.0.1:8766
-python pc/brain.py selftest --transport tcp      # 39 项
 
-# 2) 最小作业：鼠标移到 (1200,600)，读回前台窗口标题
+# 2) 自检：屏幕 / OCR / 板子 / 指针 / 视觉，五项一次看完
+python tools/connector.py --selfcheck            # 5/5 通过时退出码 0
+
+# 3) 最小作业：鼠标移到 (1200,600)，读回前台窗口标题
 echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"title","title":"记事本"}]}' \
   | python tools/connector.py
 ```
@@ -33,7 +37,7 @@ echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"title","title":"记事本
 
 ---
 
-## 连接器：一个文件，19 个操作
+## 连接器：一个文件，24 个操作
 
 `tools/connector.py` 从 stdin 读作业、打印结果、**不落任何文件**。每个操作都能带 `require`，不满足就中止。
 
@@ -42,9 +46,29 @@ echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"title","title":"记事本
 | 窗口 | `restore` `focus` `title` | 还原 / 置前 / 读标题（以 Win32 为准） |
 | 键鼠 | `click` `move` `point` `drag` `drag_path` `hold` `scroll` `key` `type` | `point` 是闭环定位，自己纠偏到目标像素 |
 | 观察 | `look` `ocr` `find` `diff` `wait_change` `read_text` | `find` 在区域里找一段文字并返回中心点 |
-| 视觉 | `see` | 可选：本地视觉模型回答「这块区域是什么」 |
+| 视觉 | `see` `vision` | 可选：本地视觉模型回答「这块区域是什么」，见下 |
 | 系统 | `clip` `launch` `wait` | 剪贴板读写 / 启动程序 / 等待 |
 | 组合 | `recipe` | `wechat-send`、`open-url` —— 带完整核对的成品动作 |
+
+### 看一眼有多快
+
+视觉模型（Qwen2.5-VL-3B，4bit，约 2.5 GB 显存）跑在**常驻服务**里：模型只加载一次，
+之后每次提问只是发一张小图过去。冷启动 22 秒一次，稳态实测：
+
+| 传图尺寸上限 | 单次问答 |
+|---|---|
+| `longest=480` | **0.72 s** |
+| `longest=640` | 1.8 s |
+| `longest=1280`（默认） | 3~4 s |
+
+```bash
+python tools/visiond.py --start     # 也可以不管：第一次 see 会自动拉起
+python tools/visiond.py --status    # 在不在、占多少显存
+```
+
+**用 OCR 能回答的问题别问模型。** 文字、按钮名、坐标用 `ocr` / `find`，毫秒级且不会瞎猜；
+`see` 只用来回答「这是什么界面」「现在卡在哪个状态」这类模糊问题，而且是裁小图问。
+
 
 成品动作示例（微信发一条中英混排消息，含标题核对与发后核对）：
 
@@ -73,6 +97,22 @@ python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4 --draw
 
 ---
 
+## 网页仪表盘（中英双语）
+
+`python pc/hub.py` 起在 <http://127.0.0.1:8765>，每秒钟读一次板子统计（运行时长、双核占用、
+内存、TF 卡、调频、网络、任务栈）。
+
+右上角语言下拉可切 **中文 / English**，选择记在浏览器里；也可以直接用链接指定：
+
+```
+http://127.0.0.1:8765/?lang=en        # 英文
+http://127.0.0.1:8765/?lang=zh        # 中文
+```
+
+翻译是渲染后的词表替换（`web/i18n.js`），不改面板逻辑；没收录的句子原样显示，不会把界面搞坏。
+
+---
+
 ## 已验证状态（真机）
 
 | 部分 | 状态 | 证据 |
@@ -84,6 +124,9 @@ python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4 --draw
 | 端到端 | ✅ 通过 | 截屏 → 移鼠标 → 再截屏差分，`E2E OK` |
 | 性能 | ✅ 达标 | ping 18.4 ms、mouse_move 12.5 ms、连发 332 条/秒 |
 | 指针精度 | ✅ 1 px | 四角标定，最差角误差 1 px |
+| 自检 | ✅ 5/5 | `--selfcheck`：屏幕 2560×1440 / OCR / 板子 / 指针 / 视觉 |
+| 视觉延迟 | ✅ 0.72 s | 常驻服务，`longest=480`；冷启动 22 s 只付一次 |
+| 仪表盘双语 | ✅ 实测 | ⌄ 切 English 后刷新仍英文，`?lang=zh` 切回 |
 
 ---
 
