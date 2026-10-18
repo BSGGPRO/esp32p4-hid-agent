@@ -66,6 +66,15 @@ type job.json | esp32p4-agent.exe
 EXE 不进版本库（是产物不是源码）：`tools\build-agent.cmd` 现打一个。要批量跑作业，
 直接用 `python tools/connector.py` 更快——EXE 每次启动要自解压，多约 1 秒。
 
+## 窗口版（给人用）
+
+双击 `esp32p4-agent.exe` 会"闪退"，那不是崩：它是控制台程序，没带参数就打完一段用法、以退出码 2 退出，
+窗口跟着关掉——它是给 AI 用的，不读 stdin 就没活干。
+
+人要双击的是 `esp32p4-agent-ui.exe`（`tools\build-ui.cmd` 打出来的窗口版，没有控制台）：
+一个窗口、一排按钮，其中**「保存 AI 说明书…（下载）」**把说明书存成 `.md`，直接拖给 Codex / 豆包 / Gemini。
+按钮逐个说明、出错排查表、红线（**禁止改固件**）都在 [docs/agent-ui.md](docs/agent-ui.md)。
+
 ## 能拿来干什么
 
 都是真跑过的，不是设想（实测耗时见[后面](#看和读有多快)）：

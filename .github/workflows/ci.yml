@@ -25,6 +25,16 @@ jobs:
       - name: 冒烟测试（语法 / 纯逻辑 / 文档与代码一致）
         run: python tests/smoke.py
 
+      - name: 窗口版界面冒烟（构建窗口后立刻销毁，不进 mainloop）
+        env:
+          PYTHONUTF8: "1"
+        run: python tests/ui_smoke.py
+
+      - name: 窗口版输入输出边界（编码/路径/权限/异常）
+        env:
+          PYTHONUTF8: "1"
+        run: python tests/ui_io.py
+
       - name: 仪表盘自检（离线拉起 hub，不碰板子）
         env:
           # runner 的默认编码是 cp1252，hub 子进程打印中文会炸

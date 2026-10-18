@@ -72,6 +72,15 @@ irreversible, and never guess coordinates.
 The EXE is a build product, not source (`.gitignore`d): build one with `tools\build-agent.cmd`.
 For batch jobs `python tools/connector.py` is faster — the EXE self-extracts and costs ~1 s per call.
 
+## The windowed version (for humans)
+
+Double-clicking `esp32p4-agent.exe` looks like a crash, but it isn't: it is a console program, so with no
+arguments it prints its usage, exits with code 2, and the console window closes with it — it is for AI.
+
+For people there is `esp32p4-agent-ui.exe` (`tools\build-ui.cmd`, windowed): one window, a row of buttons,
+and **Save AI manual…** writes the manual to a `.md` you can drop into Codex, Doubao or Gemini. Usage,
+troubleshooting and the "**never modify the firmware**" red line: [docs/agent-ui.md](docs/agent-ui.md).
+
 ## What you can do with it
 
 All of these have actually been run, not just planned (measured timings [below](#how-fast-is-take-a-look)):
