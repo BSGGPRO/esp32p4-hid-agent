@@ -4,17 +4,24 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
 firmware/dependencies.lock
+
 # python
 __pycache__/
 *.pyc
-# local evidence scratch
+
+# local scratch: screenshots, temp plans, wait frames
 *.log.tmp
-# ´óÄÔ²ãÔËĞĞÊ±²úÎï£¨½ØÍ¼/ÁÙÊ±¼Æ»®/µÈ´ıÖ¡£©
 pc/_*.json
 pc/_wait_*.png
 pc/shot.png
 e2e_before.png
 e2e_after.png
 
-# è¿è¡Œæ—¶é”æ–‡ä»¶ï¼ˆtools/board_lock.py åˆ›å»ºï¼‰
+# evidence captured on one specific machine (contains desktop screenshots)
+docs/evidence/
+
+# runtime lock file (created by tools/board_lock.py)
 .board.lock
+
+# local material and artifacts
+inbox/

@@ -69,7 +69,7 @@ $PY = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 ### 2.1 前台启动（推荐）
 
 ```powershell
-cd %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+cd <repo>
 & 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe' `
   pc\hub.py --serial COM7 --who "web-ui:hub" --quiet
 ```

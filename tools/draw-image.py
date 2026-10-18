@@ -482,39 +482,46 @@ def plan_engrave(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
 def plan_dots(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     """网点（点彩）画法：照片切成小格，每格按明暗点一个直径不同的圆点。
 
-    这是唯一真正「像照片」的画法：密集圆点在正常观看距离下就是一张缩小版照片，
-    而且每个点只是一次落笔，成本 ~30 ms，比描线便宜得多。
+    直径不是线性的，而是按「圆面积 = 该格暗度 × 格面积」反推：
+        r = pitch * sqrt(dark / pi) ≈ pitch * 0.564 * sqrt(dark)
+    线性映射会让整张图发白、只剩几个黑点（第一版就是这么翻车的）。
     """
     pitch = float(getattr(args, "pitch", 12.0) or 12.0)
-    levels = max(2, int(getattr(args, "dot_levels", 4) or 4))
-    bmin = float(getattr(args, "dot_min", 2.0) or 2.0)
-    bmax = float(getattr(args, "dot_max", 0.0) or pitch * 0.92)
+    levels = max(2, int(getattr(args, "dot_levels", 6) or 6))
     scale = min(W / float(img.width), H / float(img.height))
     nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
     small = img.resize((nw, nh), Image.LANCZOS).convert("L")
     g = np.asarray(small, dtype=np.float32)
     ox, oy = (W - nw) // 2, (H - nh) // 2
     cols, rows = max(1, int(nw / pitch)), max(1, int(nh / pitch))
+    rmax = pitch * 0.564 * 1.05
+    rmin = 0.9
+    buckets: dict[int, list] = {}
+    for r in range(rows):
+        y0, y1 = int(r * pitch), int((r + 1) * pitch)
+        for c in range(cols):
+            x0, x1 = int(c * pitch), int((c + 1) * pitch)
+            block = g[y0:y1, x0:x1]
+            if block.size == 0:
+                continue
+            dark = 1.0 - float(block.mean()) / 255.0
+            if dark <= 0.03:
+                continue
+            rad = pitch * 0.564 * math.sqrt(max(0.0, min(1.0, dark)))
+            idx = int(round((rad - rmin) / max(1e-6, rmax - rmin) * (levels - 1))) + 1
+            idx = max(1, min(levels - 1, idx))
+            buckets.setdefault(idx, []).append(
+                (ox + (x0 + x1) * 0.5, oy + (y0 + y1) * 0.5))
     strokes: list = []
     tiers: list = []
     sizes: list = []
     for t in range(1, levels):
         start = len(strokes)
-        for r in range(rows):
-            y0, y1 = int(r * pitch), int((r + 1) * pitch)
-            for c in range(cols):
-                x0, x1 = int(c * pitch), int((c + 1) * pitch)
-                block = g[y0:y1, x0:x1]
-                if block.size == 0:
-                    continue
-                dark = 1.0 - float(block.mean()) / 255.0
-                if int(round(dark * (levels - 1))) != t:
-                    continue
-                cx = ox + (x0 + x1) * 0.5
-                cy = oy + (y0 + y1) * 0.5
-                strokes.append([[cx, cy], [cx, cy]])
+        for cx, cy in buckets.get(t, ()):
+            strokes.append([[cx, cy], [cx, cy]])
         tiers.append([start, len(strokes)])
-        sizes.append(round(bmin + (bmax - bmin) * t / float(levels - 1), 1))
+        size = rmin + (rmax - rmin) * (t - 1) / float(max(1, levels - 2))
+        sizes.append(round(max(2.0, size * 2.0), 1))       # 画笔「大小」≈ 直径
     meta = {"mode": "dots", "source": "dots(pitch=%s levels=%s)" % (pitch, levels),
             "image_scaled": [nw, nh], "tiers": tiers, "tier_sizes": sizes}
     return strokes, meta
@@ -531,6 +538,99 @@ def render_preview_dots(strokes, meta, W: int, H: int) -> Image.Image:
     return im
 
 
+def _fit_gray(img: Image.Image, W: int, H: int):
+    scale = min(W / float(img.width), H / float(img.height))
+    nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
+    small = img.resize((nw, nh), Image.LANCZOS).convert("L")
+    g = np.asarray(small, dtype=np.float32) / 255.0
+    ox, oy = (W - nw) // 2, (H - nh) // 2
+    return g, ox, oy
+
+
+def plan_squiggle(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
+    """绘图仪式"连续蛇形线"（squigglecam 那一路）：
+
+    笔一路蛇形扫过画布，暗的地方把线摆得更厉害（振幅大 → 单位面积墨多），
+    亮的地方几乎直线。一支笔、一条线、不抬笔，最像写字机器人/绘图仪的画法。
+    """
+    g, ox, oy = _fit_gray(img, W, H)
+    nh, nw = g.shape
+    step = float(getattr(args, "pitch", 8.0) or 8.0)      # 行距 = 摆幅上限
+    amp = step * 0.5 * 0.95
+    dx = float(getattr(args, "dot_min", 3.0) or 3.0)      # 采样/顶点间距
+    freq = 2.0 * math.pi / max(3.0, step * 1.6)
+    strokes: list = []
+    for ri, y in enumerate(np.arange(step * 0.5, nh, step)):
+        y = float(y)
+        pts = []
+        xs = np.arange(0.0, nw, dx)
+        if ri % 2:
+            xs = xs[::-1]
+        for x in xs:
+            band = g[max(0, int(y - step * 0.5)):int(y + step * 0.5) + 1,
+                     max(0, int(x - dx * 0.5)):int(x + dx * 0.5) + 1]
+            if band.size == 0:
+                continue
+            dark = 1.0 - float(band.mean())
+            yy = y + amp * dark * math.sin((x + ri * 1.7) * freq)
+            pts.append([ox + x, oy + yy])
+        if len(pts) >= 2:
+            strokes.append(pts)
+    meta = {"mode": "squiggle", "source": "squiggle(step=%s)" % step,
+            "image_scaled": [nw, nh]}
+    return strokes, meta
+
+
+def plan_hatch(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
+    """绘图仪式多层排线（铜版画）：每层一个角度，层越深越只画最暗处。
+
+    第一层浅色区就排线，后几层只压在最暗的地方 → 明暗层次是"加线"加出来的，
+    跟铜版画/钢笔画一个原理，也和 linedraw / hatched 这类项目同一路子。
+    """
+    g, ox, oy = _fit_gray(img, W, H)
+    nh, nw = g.shape
+    layers = max(1, int(getattr(args, "hatch_layers", 3) or 3))
+    base = float(getattr(args, "pitch", 7.0) or 7.0)
+    sample = float(getattr(args, "dot_min", 2.5) or 2.5)
+    angles = [45.0, -45.0, 20.0, -20.0, 70.0]
+    dark = 1.0 - g
+    strokes: list = []
+    counts: list = []
+    diag = math.hypot(nw, nh)
+    for li in range(layers):
+        thr = 0.12 + 0.62 * (li / float(layers))
+        spacing = base * (1.0 + 0.55 * li)
+        ang = math.radians(angles[li % len(angles)])
+        ca, sa = math.cos(ang), math.sin(ang)
+        off = -diag * 0.5
+        n_lines = 0
+        while off < diag * 0.5:
+            n_lines += 1
+            # 沿该角度的直线参数化：p = center + t*dir + off*normal
+            cx, cy = nw * 0.5, nh * 0.5
+            px, py = cx - sa * off, cy + ca * off
+            dx_, dy_ = ca, sa
+            run: list = []
+            t = -diag
+            while t <= diag:
+                x, y = px + dx_ * t, py + dy_ * t
+                t += sample
+                ix, iy = int(x), int(y)
+                if 0 <= ix < nw and 0 <= iy < nh and dark[iy, ix] >= thr:
+                    run.append([ox + x, oy + y])
+                elif run:
+                    if len(run) >= 2:
+                        strokes.append(run)
+                    run = []
+            if len(run) >= 2:
+                strokes.append(run)
+            off += spacing
+        counts.append(len(strokes))
+    meta = {"mode": "hatch", "source": "hatch(layers=%s base=%s)" % (layers, base),
+            "image_scaled": [nw, nh], "per_layer": counts}
+    return strokes, meta
+
+
 def plan(img: Image.Image, W: int, H: int, args):
     if args.mode == "grid":
         strokes, meta = plan_grid(img, W, H, args)
@@ -538,6 +638,10 @@ def plan(img: Image.Image, W: int, H: int, args):
         strokes, meta = plan_engrave(img, W, H, args)
     elif args.mode == "dots":
         strokes, meta = plan_dots(img, W, H, args)
+    elif args.mode == "squiggle":
+        strokes, meta = plan_squiggle(img, W, H, args)
+    elif args.mode == "hatch":
+        strokes, meta = plan_hatch(img, W, H, args)
     else:
         strokes, meta = plan_line(img, W, H, args)
     meta["strokes"] = len(strokes)
@@ -951,7 +1055,8 @@ def main(argv=None) -> int:
     ap.add_argument("--from-plan", default=None,
                     help="文字计划：plan JSON，或每行 'x,y x,y ...' 的文本（也认 # 注释、canvas:x1,y1,x2,y2）")
     ap.add_argument("--mode", default="line",
-                    choices=["line", "sketch", "grid", "engrave", "dots"])
+                    choices=["line", "sketch", "grid", "engrave", "dots", "squiggle", "hatch"])
+    ap.add_argument("--hatch-layers", type=int, default=3, help="hatch 的排线层数")
     ap.add_argument("--pitch", type=float, default=12.0, help="dots 的网点间距 px")
     ap.add_argument("--dot-levels", type=int, default=4, help="dots 的明暗级数")
     ap.add_argument("--dot-min", type=float, default=2.0, help="dots 最浅一级的笔径 px")

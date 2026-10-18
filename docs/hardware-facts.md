@@ -523,7 +523,7 @@ factory,  app,  factory, 0x10000,  3M,
 | `...\1-Demo\IDF-DEMO\withDisplay\lvgl_demo_v9\README_CN.md` | 启动日志（QIO/80M/16MB/GPIO26 冲突）**来自 EV 板** |
 | `...\1-Demo\ARDUINO-DEMO\jc_esp32p4_m3_lvgl_v8\pins_config.h` | 触摸 I2C = 7/8 的独立佐证 |
 | `...\5-Schematic\PCB package library\JC-ESP32P4-M3.SCHLIB` | binary strings：引脚名 `ESP_USB_N/P`、`USB1_P1_N/P`、GPIO 列表缺 14-19/24-25（仅作【推断】旁证） |
-| `%USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\docs\protocol.md` | 与厂商证据做差异对照（**未修改**） |
+| `<repo>\docs\protocol.md` | 与厂商证据做差异对照（**未修改**） |
 | `...\esp32p4-hid-agent\firmware\{sdkconfig.defaults,main\idf_component.yml,main\hid_device.c,main\uart_link.c,main\Kconfig.projbuild,CMakeLists.txt}` | §4.3 的"本项目差异"实际对照（**只读，未修改**；快照时间 2026-10-17 19:2x） |
 | `...\esp32p4-hid-agent\tools\idf-env.ps1` | IDF 5.5.6 / `D:\esp`（**未修改**） |
 

@@ -1,0 +1,517 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""tools/connector.py — 唯一入口：从 stdin 收一份 JSON 作业，用板子执行，打印结果。
+
+**不再为每个任务新建脚本**。要做的事写成 JSON 从管道喂进来，执行完就没了：
+
+    echo {"steps":[{"op":"focus","title":"微信"},{"op":"key","combo":"ctrl+f"}]} ^
+        | %USERPROFILE%\\dsh-vision\\Scripts\\python.exe tools/connector.py
+
+也可以直接调 main 里的 run_job(dict) 拿返回字典。
+
+作业格式::
+
+    {"steps": [ {...}, {...} ]}          或直接 [ {...} ]
+
+支持的操作（每条都可带 "require"，不满足就整单失败退出，绝不带病往下走）：
+
+    restore   title=<子串>                还原最小化/托盘里的窗口（不移动、不改大小）
+    focus     title=<子串>                切到前台
+    title     title=<子串>                报告当前窗口标题（facts 用 Win32，不靠模型）
+    key       combo=<ctrl+t>              按组合键
+    type      text=<...>                  敲字（只支持能直接映射的键）
+    click     x= y=  [button=left|right]  点坐标；或 on=<变量名> 点某个 find 结果
+    move      x= y=                       移动光标
+    scroll    amount=<n>                  滚轮
+    wait      ms=<n>                      等
+    ocr       rect=[x0,y0,x1,y1]          逐行文字+坐标（RapidOCR，秒级）
+    find      text=<...> [rect=..] [thresh=0.7] [as=名字]
+                                          在区域里找一行字，存成变量（含中心点）
+    see       q=<问题> [rect=..] [as=名字] 让本地 Qwen2.5-VL 看一眼（懒加载，20s 起）
+
+    recipe    name=wechat-send  to=<聊天> pieces=[py:拼音, raw:ascii]
+              微信发消息（标题核对 → 清空输入框 → 拼音选字/直接敲 → 发前核对 → 回车 → 发后核对）
+    recipe    name=open-url  url=<网址> [expect=标题关键字] [new_tab=true]
+              开浏览器到某网址（开着就 Ctrl+T 新标签，没开就 Win+R 交给系统，最后核对标题）
+
+变量（as=）之后可以用 on=<名字>（点击）。
+
+铁律照旧：不动用户窗口大小位置；核对不上就停；退出前一定释放板子。
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+
+# 模型已经缓存在本地：离线加载，别再跑去 huggingface 上重试（那边不通，一次要等几分钟）
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "pc"))
+sys.path.insert(0, HERE)
+
+_spec = importlib.util.spec_from_file_location("draw_rage", os.path.join(HERE, "draw-rage.py"))
+dr = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(dr)
+import eyes  # noqa: E402
+from brain import Brain, screen_size  # noqa: E402
+
+TMP = os.environ.get("TEMP", ".")
+ZERO = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"))
+_ocr_engine = None
+_vlm = None      # (model, processor)，只有 see 用到才加载
+
+
+def clean(s: str) -> str:
+    return (s or "").translate(ZERO).lower()
+
+
+def tight(s: str) -> str:
+    return "".join(ch for ch in (s or "") if not ch.isspace())
+
+
+def alnum(s: str) -> str:
+    """只留字母数字汉字：OCR 把 deepseek 读成 deep'seek / deep seek，标点空格不能算差异。"""
+    return "".join(ch for ch in (s or "").lower() if ch.isalnum())
+
+
+def cjk(s: str) -> str:
+    return "".join(ch for ch in tight(s) if "\u4e00" <= ch <= "\u9fff")
+
+
+def ratio(target: str, text: str) -> float:
+    """最长公共子序列命中率——OCR 会把「件」读成「亻牛」，不能死等字符串。"""
+    t, s = tight(target), tight(text)
+    if not t:
+        return 0.0
+    prev = [0] * (len(s) + 1)
+    for ch in t:
+        cur = [0] * (len(s) + 1)
+        for j, c in enumerate(s, 1):
+            cur[j] = prev[j - 1] + 1 if c == ch else max(prev[j], cur[j - 1])
+        prev = cur
+    return prev[-1] / float(len(t))
+
+
+# ------------------------------------------------------------------ 窗口（Win32）
+def windows():
+    return dr.list_windows()
+
+
+def pick(title: str) -> dict | None:
+    """按标题子串挑窗口；可见的优先，其次是能拿到句柄的。"""
+    best = None
+    for w in windows():
+        if clean(title) not in clean(w["title"]):
+            continue
+        iconic = w["rect"][0] <= -30000
+        rank = (not iconic, w["rect"][2] - w["rect"][0])
+        if best is None or rank > best[0]:
+            best = (rank, w)
+    return best[1] if best else None
+
+
+def restore(w: dict) -> None:
+    import ctypes
+
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    h = ctypes.c_void_p(int(w["hwnd"]))
+    if u.IsIconic(h):
+        u.ShowWindow(h, 9)     # SW_RESTORE
+    u.ShowWindow(h, 5)         # SW_SHOW
+    u.SetForegroundWindow(h)
+
+
+# --------------------------------------------------------------------- 眼睛
+def ocr(rect) -> list:
+    """RapidOCR：一次拿回所有行的文字和屏幕坐标。"""
+    global _ocr_engine
+    if _ocr_engine is None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        _ocr_engine = RapidOCR()
+    from PIL import Image
+
+    path = eyes.capture(os.path.join(TMP, "_conn_full.png")).path
+    x0, y0, x1, y1 = rect
+    q = os.path.join(TMP, "_conn_crop.png")
+    Image.open(path).convert("RGB").crop((x0, y0, x1, y1)).save(q)
+    res, _ = _ocr_engine(q)
+    out = []
+    for box, text, score in (res or []):
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        out.append({"text": text, "score": float(score),
+                    "x": min(xs) + x0, "y": min(ys) + y0,
+                    "w": max(xs) - min(xs), "h": max(ys) - min(ys)})
+    return out
+
+
+def see(question: str, rect=None, longest: int = 1280, max_new_tokens: int = 200) -> str:
+    """本地 Qwen2.5-VL-3B（4bit）。第一次调用会花 ~20s 加载，之后每问几秒。"""
+    global _vlm
+    import torch
+    from PIL import Image
+    from transformers import (AutoProcessor, BitsAndBytesConfig,
+                              Qwen2_5_VLForConditionalGeneration)
+
+    if _vlm is None:
+        mid = "Qwen/Qwen2.5-VL-3B-Instruct"
+        q = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
+                               bnb_4bit_compute_dtype=torch.bfloat16)
+        m = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            mid, torch_dtype=torch.bfloat16, device_map="cuda", quantization_config=q).eval()
+        _vlm = (m, AutoProcessor.from_pretrained(mid))
+
+    model, proc = _vlm
+    path = eyes.capture(os.path.join(TMP, "_conn_see.png")).path
+    im = Image.open(path).convert("RGB")
+    if rect:
+        im = im.crop(tuple(int(v) for v in rect))
+    if max(im.size) > longest:
+        s = longest / float(max(im.size))
+        im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
+    msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": question}]}]
+    text = proc.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+    inputs = proc(text=[text], images=[im], return_tensors="pt").to("cuda")
+    with torch.no_grad():
+        out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+    return proc.batch_decode(out[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0].strip()
+
+
+# ---------------------------------------------------------------- 组合动作
+# 这两个是"以前写成一整个脚本"的活，现在收进连接器，不再单独留文件。
+BROWSERS = ("microsoft edge", "google chrome", "chrome", "firefox", "brave", "opera")
+
+
+def _brain(transport: str) -> Brain:
+    b = Brain(transport=transport)
+    b.__enter__()
+    b.release()
+    return b
+
+
+def recipe_wechat_send(st: dict, transport: str, rec: dict) -> None:
+    """微信给指定聊天发一句话。pieces 里 py:<拼音> 走输入法，raw:<ascii> 直接敲。"""
+    to = st.get("to", "文件传输助手")
+    pieces = st.get("pieces") or ["py:nihao"]
+    w = pick("微信")
+    if not w:
+        raise RuntimeError("没找到微信窗口")
+    restore(w)
+    time.sleep(0.6)
+    dr.focus_hwnd(int(w["hwnd"]))
+    time.sleep(0.5)
+    x0, y0, x1, y1 = w["rect"]
+    W = x1 - x0
+    # 标题条很窄：再往下就是消息区，宽的高亮行（比如消息里的网址）会冒充标题
+    hdr_rect = (x0 + int(W * 0.30), y0 + 25, x1, y0 + 110)
+    band_rect = (x0 + 340, y1 - 140, x1 - 40, y1 - 45)
+    b = _brain(transport)
+    try:
+        rows = ocr(hdr_rect)
+        head = max(rows, key=lambda r: ratio(to, r["text"])) if rows else None
+        rec["header"] = head["text"] if head else None
+        if not head or ratio(to, head["text"]) < 0.7:
+            raise RuntimeError("当前聊天不是 %r（标题是 %r），不动手" % (to, rec["header"]))
+        b.click((x0 + int(W * 0.55), y1 - 95))
+        time.sleep(0.4)
+        b.key("ctrl+a")
+        b.key("backspace")
+        time.sleep(0.4)
+        base = {tight(r["text"]) for r in ocr(band_rect)}
+        for piece in pieces:
+            kind, _, val = piece.partition(":")
+            b.type_text(val)
+            time.sleep(0.9)
+            band = ocr(band_rect)
+            if kind == "raw":
+                # 只有"候选条真的在"才按回车（候选行以序号开头）；否则回车会把没写完的消息发出去
+                if any(r["text"].strip()[:1].isdigit() for r in band):
+                    b.key("enter")
+                    time.sleep(0.7)
+                continue
+            if not band:
+                raise RuntimeError("敲完 %r 没有候选条，输入法可能不是中文" % val)
+            b.key("1")
+            time.sleep(0.8)
+            # 候选条消失的准确标志：拼音串不再出现在输入框里（"0"/占位符那类噪声不能当依据）
+            key = alnum(val)
+            left = [r["text"] for r in ocr(band_rect) if key and key in alnum(r["text"])]
+            if left:
+                raise RuntimeError("拼音还留在输入框里（%r），没敢回车" % left)
+        blob = alnum("".join(r["text"] for r in ocr(band_rect)))
+        raws = [p.split(":", 1)[1] for p in pieces if p.startswith("raw:")]
+        miss = [r for r in raws if alnum(r) not in blob]
+        if miss:
+            raise RuntimeError("输入框里没看到 %r，没敢回车" % miss)
+        msg_rect = (x0 + 340, y0 + 700, x1, y1)
+        before = {(tight(r["text"]), int(r["y"])) for r in ocr(msg_rect)}
+        b.key("enter")
+        time.sleep(1.6)
+        after = ocr(msg_rect)
+        still = [r["text"] for r in ocr(band_rect) if tight(r["text"]) not in base]
+        new = [r["text"] for r in after
+               if (tight(r["text"]), int(r["y"])) not in before and cjk(r["text"])]
+        rec.update(input_after_send=still, new_bubbles=new)
+        if still or not new:
+            raise RuntimeError("回车发完了但没核对上（输入框剩 %r / 新气泡 %r）" % (still, new))
+    finally:
+        b.release()
+
+
+def recipe_open_url(st: dict, transport: str, rec: dict) -> None:
+    """把浏览器打开到某个网址：开着就新标签，没开就 Win+R 交给系统。"""
+    url = st["url"]
+    expect = st.get("expect") or url.split("//")[-1].split("/")[0].replace("www.", "")
+    rec["expect"] = expect
+    w = None
+    for x in windows():
+        t = clean(x["title"])
+        if any(k in t for k in BROWSERS) and (not st.get("browser") or clean(st["browser"]) in t):
+            if w is None or (x["rect"][0] > -30000 and w["rect"][0] <= -30000):
+                w = x
+    b = _brain(transport)
+    try:
+        if w:
+            rec["mode"] = "existing"
+            restore(w)
+            time.sleep(0.6)
+            dr.focus_hwnd(int(w["hwnd"]))
+            time.sleep(0.5)
+            if st.get("new_tab", True):
+                b.key("ctrl+t")
+                time.sleep(0.7)
+            b.key("ctrl+l")
+            time.sleep(0.4)
+            b.type_text(url)
+            time.sleep(0.7)
+            for _ in range(3):        # 输入法若在组字，第一下回车只是提交
+                b.key("enter")
+                time.sleep(2.0)
+                cur = [x for x in windows() if int(x["hwnd"]) == int(w["hwnd"])]
+                if cur and clean(expect) in clean(cur[0]["title"]):
+                    break
+        else:
+            rec["mode"] = "launch"
+            b.key("win+r")
+            time.sleep(1.2)
+            b.type_text(url)
+            time.sleep(0.6)
+            b.key("enter")
+            time.sleep(1.0)
+            b.key("enter")
+    finally:
+        b.release()
+
+    end = time.time() + float(st.get("wait", 25.0))
+    last = ""
+    while time.time() < end:
+        for x in windows():
+            if any(k in clean(x["title"]) for k in BROWSERS):
+                last = x["title"]
+                if clean(expect) in clean(last):
+                    rec["window_after"] = last
+                    return
+        time.sleep(1.0)
+    raise RuntimeError("标题里没等到 %r（现在是 %r）" % (expect, last))
+
+
+RECIPES = {"wechat-send": recipe_wechat_send, "open-url": recipe_open_url}
+
+
+# --------------------------------------------------------------------- 执行
+def run_job(job: dict | list, transport: str = "tcp") -> dict:
+    steps = job.get("steps") if isinstance(job, dict) else job
+    steps = steps or []
+    res: dict = {"ok": True, "steps": [], "vars": {}}
+    vars: dict = res["vars"]
+    brain = None
+    try:
+        for i, st in enumerate(steps):
+            op = st.get("op")
+            rec: dict = {"i": i, "op": op}
+            try:
+                if op in ("restore", "focus", "title"):
+                    w = pick(st.get("title", ""))
+                    if not w:
+                        raise RuntimeError("没找到窗口 %r" % st.get("title"))
+                    if op == "restore":
+                        restore(w)
+                        time.sleep(st.get("wait", 0.6))
+                    elif op == "focus":
+                        restore(w)
+                        dr.focus_hwnd(int(w["hwnd"]))
+                        time.sleep(st.get("wait", 0.5))
+                    rec["hwnd"] = int(w["hwnd"])
+                    rec["title"] = pick(st.get("title", ""))["title"] if op != "title" else w["title"]
+                    if st.get("as"):
+                        vars[st["as"]] = int(w["hwnd"])
+
+                elif op in ("key", "type", "click", "move", "scroll",
+                            "drag", "drag_path", "hold", "point", "wait_change",
+                            "look", "read_text", "diff"):
+                    if brain is None:
+                        brain = Brain(transport=transport)
+                        brain.__enter__()
+                        brain.release()
+                    if op == "key":
+                        brain.key(st["combo"])
+                    elif op == "type":
+                        brain.type_text(st["text"])
+                    elif op == "move":
+                        brain.move(int(st["x"]), int(st["y"]))
+                    elif op == "scroll":
+                        brain.scroll(int(st.get("amount", -3)))
+                    elif op == "click":
+                        if "on" in st:
+                            box = vars.get(st["on"])
+                            if not box:
+                                raise RuntimeError("变量 %r 不存在" % st["on"])
+                            pt = (int(box["cx"]), int(box["cy"]))
+                        else:
+                            pt = (int(st["x"]), int(st["y"]))
+                        brain.click(pt, button=st.get("button", "left"))
+                    elif op == "drag":
+                        brain.drag(int(st["x1"]), int(st["y1"]), int(st["x2"]), int(st["y2"]),
+                                   button=st.get("button", "left"))
+                    elif op == "drag_path":
+                        brain.drag_path([tuple(int(v) for v in p) for p in st["points"]],
+                                        button=st.get("button", "left"))
+                    elif op == "hold":
+                        brain.hold(st["keys"])
+                    elif op == "point":      # 闭环定位：比 move 准（自己纠偏到目标）
+                        rec["result"] = brain.point(int(st["x"]), int(st["y"]),
+                                                    tol=int(st.get("tol", 2)))
+                    elif op == "look":
+                        rec["result"] = brain.look(st.get("path"), st.get("region"))
+                    elif op == "read_text":
+                        rec["result"] = brain.read_text(
+                            select_all=bool(st.get("select_all", True)),
+                            restore_clip=bool(st.get("restore_clip", True)))
+                        rec["text"] = (rec["result"] or {}).get("text")
+                    elif op == "diff":
+                        rec["result"] = brain.diff(st["a"], st["b"], int(st.get("threshold", 0)))
+                    else:                    # wait_change：等画面变化，等不到就报错
+                        rec["result"] = brain.wait_change(
+                            timeout_ms=int(st.get("timeout_ms", 3000)),
+                            threshold=int(st.get("threshold", 0)))
+                    rec["at"] = st.get("combo") or st.get("text") or (
+                        vars.get(st["on"], {}).get("cx") if "on" in st else (st.get("x"), st.get("y")))
+
+                elif op == "launch":
+                    if brain is not None:
+                        brain.release()
+                        brain = None
+                    b = _brain(transport)
+                    try:
+                        rec["result"] = b.launch(st["cmd"])
+                    finally:
+                        b.release()
+
+                elif op == "clip":
+                    from brain import clip_get, clip_set
+                    if "set" in st:
+                        clip_set(st["set"])
+                        rec["set_len"] = len(st["set"])
+                    else:
+                        rec["text"] = clip_get()
+
+                elif op == "wait":
+                    time.sleep(float(st.get("ms", 500)) / 1000.0)
+
+                elif op == "ocr":
+                    rows = ocr(st["rect"])
+                    rec["rows"] = [r["text"] for r in rows]
+                    if st.get("as"):
+                        vars[st["as"]] = rows
+
+                elif op == "find":
+                    rect = st.get("rect") or [0, 0, *screen_size()]
+                    rows = ocr(rect)
+                    want = st.get("text", "")
+                    hit, best = None, 0.0
+                    for r in rows:
+                        s = ratio(want, r["text"])
+                        if s > best:
+                            hit, best = r, s
+                    if hit is None or best < float(st.get("thresh", 0.7)):
+                        raise RuntimeError("区域里没找到 %r（最高 %.2f）" % (want, best))
+                    box = dict(hit)
+                    box["cx"] = int(hit["x"] + hit["w"] / 2)
+                    box["cy"] = int(hit["y"] + hit["h"] / 2)
+                    if st.get("as"):
+                        vars[st["as"]] = box
+                    rec["found"] = {k: box[k] for k in ("text", "x", "y", "w", "h", "cx", "cy")}
+                    rec["score"] = round(best, 3)
+
+                elif op == "see":
+                    ans = see(st["q"], st.get("rect"), int(st.get("longest", 1280)),
+                              int(st.get("max_new_tokens", 200)))
+                    rec["answer"] = ans
+                    if st.get("as"):
+                        vars[st["as"]] = ans
+
+                elif op == "recipe":
+                    name = st.get("name")
+                    fn = RECIPES.get(name or "")
+                    if not fn:
+                        raise RuntimeError("不认识的组合动作 %r（有：%s）"
+                                           % (name, ", ".join(sorted(RECIPES))))
+                    if brain is not None:      # 组合动作自己开会话，先把这边的放掉
+                        brain.release()
+                        brain = None
+                    fn(st, transport, rec)
+                    rec["recipe"] = name
+
+                else:
+                    raise RuntimeError("不认识的操作 %r" % op)
+
+                if "require" in st:
+                    blob = json.dumps(rec, ensure_ascii=False)
+                    if clean(st["require"]) not in clean(blob):
+                        raise RuntimeError("require 不满足：%r" % st["require"])
+                rec["ok"] = True
+            except Exception as e:  # noqa: BLE001
+                rec.update(ok=False, err="%s: %s" % (type(e).__name__, e))
+                res["steps"].append(rec)
+                res["ok"] = False
+                res["err"] = "第 %d 步 %s 失败：%s" % (i, op, e)
+                return res
+            res["steps"].append(rec)
+        return res
+    finally:
+        if brain is not None:
+            try:
+                brain.release()
+            except Exception:  # noqa: BLE001
+                pass
+        for name in ("_conn_full.png", "_conn_crop.png", "_conn_see.png"):
+            p = os.path.join(TMP, name)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
+def main() -> int:
+    raw = sys.stdin.read()
+    if not raw.strip():
+        print(json.dumps({"ok": False, "err": "stdin 里没有作业 JSON"}, ensure_ascii=False))
+        return 2
+    job = json.loads(raw)
+    out = run_job(job, transport=os.environ.get("CONNECTOR_TRANSPORT", "tcp"))
+    print(json.dumps(out, ensure_ascii=False))
+    return 0 if out.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -6,7 +6,7 @@
   "purpose": "让 AI/脚本通过一块 ESP32-P4 板子的 USB HID 键鼠操作本机（截屏闭环，落点约 1px）",
   "environment": {
     "os": "Windows",
-    "repo": "%USERPROFILE%\\Documents\\deepseek-harness\\default-workspace\\esp32p4-hid-agent",
+    "repo": "<repo>",
     "python": "%USERPROFILE%\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe",
     "python_version": "3.12",
     "hub_http": "http://127.0.0.1:8765",

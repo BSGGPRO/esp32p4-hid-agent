@@ -1,229 +1,141 @@
-# esp32p4-hid-agent — 让 AI 用 ESP32-P4 当"手"，用截屏当"眼"
+# esp32p4-hid-agent
 
-> JC-ESP32P4-M3（GUITION，ESP32-P4 + 板载 C6）插电脑即插即用成一个**标准 USB HID 键鼠**，
-> PC 端零依赖脚本负责「截屏 → 发指令 → 板子动手 → 再截屏验证」的闭环。
-> 纯 ESP-IDF（不用 Arduino），零驱动、零授权、不碰任何反作弊。
->
-> **要把这块板子（键鼠能力）交给另一个 AI 用？** 直接把仓库根的
-> [`HANDOFF-TO-AI.txt`](HANDOFF-TO-AI.txt) 整个发给它——单文件、全量、自包含。
+把一块 **ESP32-P4 开发板**变成这台 Windows 上的**标准 USB 键鼠**，再用一个 **JSON 连接器**把它用起来：
+截屏 → 判断 → 动鼠标 / 敲键盘 → 再截屏核对。硬件输入、零驱动、不碰任何软件注入。
+
+```
+   ┌──────────────┐  USB HID（键盘+鼠标）  ┌──────────────┐
+   │ ESP32-P4 板子 │ ────────────────────▶ │  这台 Windows │
+   └──────┬───────┘                       └──────▲───────┘
+          │ UART 115200 / TCP 透传                 │ 截屏
+   ┌──────▼───────────────────────────────────────┴───────┐
+   │ tools/connector.py —— 读一份 JSON 作业，用板子执行     │
+   └──────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 当前状态（2026-10-17，真机已跑通）
+## 快速开始
+
+```bash
+# 0) Windows + Python 3.12；板子的两个口都插上（见「接线」）
+# 1) 起服务（占串口，提供 TCP 透传 + 网页仪表盘），再自检
+python pc/hub.py                                 # http://127.0.0.1:8765 · TCP 127.0.0.1:8766
+python pc/brain.py selftest --transport tcp      # 39 项
+
+# 2) 最小作业：鼠标移到 (1200,600)，读回前台窗口标题
+echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"title","title":"记事本"}]}' \
+  | python tools/connector.py
+```
+
+输出永远是 JSON：`{"ok": true, "steps": [...], "vars": {...}}`。
+**任何一步核对不上就整单失败并停手**，不会带着错误继续动键鼠。
+
+---
+
+## 连接器：一个文件，19 个操作
+
+`tools/connector.py` 从 stdin 读作业、打印结果、**不落任何文件**。每个操作都能带 `require`，不满足就中止。
+
+| 类别 | 操作 | 说明 |
+|---|---|---|
+| 窗口 | `restore` `focus` `title` | 还原 / 置前 / 读标题（以 Win32 为准） |
+| 键鼠 | `click` `move` `point` `drag` `drag_path` `hold` `scroll` `key` `type` | `point` 是闭环定位，自己纠偏到目标像素 |
+| 观察 | `look` `ocr` `find` `diff` `wait_change` `read_text` | `find` 在区域里找一段文字并返回中心点 |
+| 视觉 | `see` | 可选：本地视觉模型回答「这块区域是什么」 |
+| 系统 | `clip` `launch` `wait` | 剪贴板读写 / 启动程序 / 等待 |
+| 组合 | `recipe` | `wechat-send`、`open-url` —— 带完整核对的成品动作 |
+
+成品动作示例（微信发一条中英混排消息，含标题核对与发后核对）：
+
+```json
+{"steps": [
+  {"op": "recipe", "name": "wechat-send", "to": "文件传输助手", "pieces": ["py:nihao"]}
+]}
+```
+
+`py:<拼音>` 走输入法出候选再选字，`raw:<ascii>` 直接敲字母。发前核对输入框内容，发后核对输入框已清空
+且出现新气泡；对不上就报错，不算成功。
+
+---
+
+## 图片 → 画出来
+
+把任意图片转成笔画，用板子在画图里一笔笔画出来（图片转笔画是确定性算法，不依赖模型视觉）：
+
+```powershell
+python tools\photo-to-draw.py 照片.jpg --quality good --draw   # 或双击 photo-draw.bat
+python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4 --draw
+```
+
+实测：猫线稿 26 笔 / 193 顶点 / 约 4 秒，`pearson 0.92`；照片速写 42 笔 / 492 顶点。
+细节见 [docs/image-to-draw.md](docs/image-to-draw.md)。1 px 铅笔做不到无损还原，能给钢笔/版画级可辨认画。
+
+---
+
+## 已验证状态（真机）
 
 | 部分 | 状态 | 证据 |
 |---|---|---|
-| 固件 `firmware/` | ✅ 编译 + 烧录 + 真机运行 | `esp32p4_hid_agent.bin` = 328,736 B，0 error / 0 warning；esp_tinyusb 2.4.0 + tinyusb 0.21.0 |
-| HID 描述符 | ✅ 从编译产物解析验证 | `tools/check-hid-descriptor.py` → ID 1 = 64 bits（8B 键盘）/ ID 2 = 40 bits（5B 鼠标），逐字段吻合 §5，`RESULT: PASS`（证据 `docs/evidence/hid-descriptor.txt`） |
-| 真机枚举 | ✅ **被系统认成标准键鼠** | `HID Keyboard Device`(COL01) + `HID-compliant mouse`(COL02)，序列号 = 芯片 MAC `80F1B2D39CE6` |
-| PC 桥 `pc/` | ✅ 已验收 | `selftest` 39/39 PASS；截屏 2560×1440；零第三方依赖（仅 Pillow） |
-| 协议 `docs/protocol.md` | ✅ **v1.1 冻结** | 15 命令 / 7 错误码 / 4 事件；v1.1 修掉 `release_all` 被限流、RX 20 ms 空等 |
-| 硬件事实 `docs/hardware-facts.md` | ✅ 取证 + §11 真板实测补充 | 含芯片 rev v1.3 约束、签名 CH340、协议实测 |
-| 端到端真机闭环 | ✅ **通过** | 截屏→移鼠标→再截屏差分：变化 7037 px（0.19%），`E2E OK` |
-| 性能 | ✅ 达标 | ping **18.4 ms**（目标 <30）/ mouse_move **12.5 ms**（目标 <15）/ 连发 **332 条/秒** |
+| 固件 | ✅ 编译 + 烧录 + 真机运行 | `esp32p4_hid_agent.bin` 328,736 B，0 error / 0 warning |
+| USB 枚举 | ✅ 系统认成标准键鼠 | `HID Keyboard Device` + `HID-compliant mouse`，序列号 = 芯片 MAC |
+| PC 桥 | ✅ 自检 39/39 | 截屏 2560×1440，仅依赖 Pillow |
+| 协议 | ✅ v1.2 | 15 命令 / 7 错误码 / 4 事件 |
+| 端到端 | ✅ 通过 | 截屏 → 移鼠标 → 再截屏差分，`E2E OK` |
+| 性能 | ✅ 达标 | ping 18.4 ms、mouse_move 12.5 ms、连发 332 条/秒 |
+| 指针精度 | ✅ 1 px | 四角标定，最差角误差 1 px |
 
-### 真机验收清单（Windows 侧独立取证，不采信板子自报）
+---
 
-| 检查 | 取证方式 | 结果 |
-|---|---|---|
-| `host_mounted` | 固件 `status` | `True` |
-| 鼠标相对移动 | `GetCursorPos()` 前后对比 | 请求 (120,60) → 实测 +199,+23（方向正确；幅度被"提高指针精确度"放大，属系统行为） |
-| 键盘按下/抬起 | `GetAsyncKeyState(VK_SHIFT)` | False → **True** → False |
-| Win 键 | `GetAsyncKeyState(VK_LWIN)` | **True** → False |
-| 安全释放 | 按住 ctrl 后停发报文 2.2 s，再读按键状态 | 已自动全抬（`safety_timeout_ms=1500` 兜底生效） |
-| 端到端闭环 | 截屏差分 | 有变化，`E2E OK: change detected` |
-
-### 接线（两个口必须同时插）
+## 接线：两个口都要插
 
 | 口 | 接到 | 作用 |
 |---|---|---|
-| 转 UART（CH340） | 本机 | 烧录 + 指令通道；换 USB 口会改 COM 号，用 `--list-ports` 自动识别 |
-| 高速 Type-C | 目标机（本机亦可） | USB HID 键鼠输出，`VID_303A&PID_4004` |
+| UART（CH340） | 本机 | 烧录 + 指令通道；换 USB 口会改 COM 号 |
+| 高速 Type-C | 目标机 | USB HID 键鼠输出，`VID_303A&PID_4004` |
 
-只插 UART 口：能烧录、能收发协议，但 `host_mounted=False`，板子"没有手"。
-只插高速口：板子被认成键鼠，但没有指令通道，板子"没有脑"。**两个都要。**
-
----
-
-## 图片 → 画出来（2026-10-18 新增）
-
-把任意格式的图变成板子能画的笔画，在画图里一笔一笔画出来（**不需要模型有视觉能力**，
-图片→笔画是确定性算法，像不像用数值指标自检）：
-
-```powershell
-# 1) 收图：剪贴板 / 任意格式文件（手机照片先存到电脑）
-python tools\ingest-image.py --clipboard
-python tools\ingest-image.py "D:\pic\cat.heic" --thumb 1200
-
-# 2) 规划（默认不碰鼠标）：line 线稿 / sketch 照片速写 / grid 像素图标
-python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4
-#    -> inbox\plan-*-preview.png 预览 + strokes/vertices/est_seconds/similarity
-
-# 3) 真画（先打开画图，别最大化；会逐笔闭环、用户抢鼠标会抬笔跳过）
-python tools\draw-image.py "inbox\cat.png" --mode line --preview-width 4 --draw
-
-# 另一条更省事的路：让能看图的模型把图转成「坐标文字」，直接照文字画
-python tools\draw-image.py --from-plan plan.txt --draw
-```
-
-实测：猫线稿 26 笔 / 193 顶点 / 约 4 秒，`pearson 0.92` / `ink_iou 0.75`；
-照片速写 42 笔 / 492 顶点 / 约 7 秒。细节见 [`docs/image-to-draw.md`](docs/image-to-draw.md)。
-
-### 照片一键画（双击就能用）
-
-不想记命令就双击仓库根的 **`photo-draw.bat`**：选照片 → 选画布 → ①预览（不动鼠标）
-→ 满意了点 ②开始画。**不用先打开画图**：程序会自己拉起画图、准备好白画布再画，
-画的过程中按 **ESC 随时停笔**。命令行等价：
-
-```
-python tools\photo-to-draw.py 照片.jpg                    # 只预览
-python tools\photo-to-draw.py 照片.jpg --quality good --draw
-```
-
-质量档：`quick`(3 层) / `good`(4 层) / `hd`(7 层)；画布 `820x600` 约 3-5 分钟、
-`1040x760` 约 6-9 分钟。引擎是 `--mode engrave`（多层等值线，版画风）：
-同一张图 900 画布下 `sketch` 只有 `pearson 0.18`，`engrave` 能到 `0.68`。
-**画布越大越像**，所以程序会把画布开成 1040×760 而不是默认小窗口的 530×530。
-
-诚实边界：1 px 铅笔笔画做不到照片「无损」还原，能给的是钢笔/版画级可辨认画。
+只插 UART：能收发协议但没有手。只插高速口：是键鼠但没有指令通道。**两个都要。**
 
 ---
 
-## 快速开始（一条命令，两个口都插好后）
+## 限制与红线
 
-```powershell
-cd %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
-pwsh -ExecutionPolicy Bypass -File tools\flash-and-verify.ps1
-```
-
-它会：自动挑出 CH340 串口（自动排除蓝牙虚拟口）→ 烧录 → `ping` 探活 → 校验 `host_mounted` → 跑 `e2e-demo`（截屏→鼠标右移→再截屏→差分）。
-接线见上表：**转 UART 口 → 本机**（烧录+指令），**高速 Type-C → 目标机**（HID）。
-
-只想验证不重烧：`tools\flash-and-verify.ps1 -SkipFlash`。
-只想跑端到端：`python pc\agent_bridge.py e2e-demo --dx 200 --port COM7`。
-
-手工分步版见 [docs/bringup-runbook.md](docs/bringup-runbook.md)。
+- 一次只能一个透传客户端；独占失败报 `board_busy`。
+- 板子是硬件键鼠，**会真的操作这台电脑**：不对着真人或不可逆动作盲点。
+- 不移动、不缩放、不最大化用户窗口；只为目标窗口做「还原 + 置前」。
+- 独占全屏程序（游戏等）会吞掉按键，此时不投键鼠。
+- 中文输入依赖系统输入法；`raw:` 只在输入法组字时按回车提交。
 
 ---
 
 ## 目录
 
-```
-esp32p4-hid-agent/
-├─ docs/
-│  ├─ protocol.md          # ★ 固件↔PC 唯一接口契约（Lead 维护，v1.1）
-│  ├─ hardware-facts.md    # 硬件/烧录事实取证（每条带证据等级）
-│  ├─ brain-usage.md       # ★ 大脑层：动作清单/绝对定位原理/真机演示/已知坑
-│  └─ bringup-runbook.md   # 上电·烧录·验收手册（含故障排查）
-├─ firmware/               # ESP-IDF v5.5.6 / esp32p4 / esp_tinyusb v2
-│  ├─ main/{app_main,uart_link,keymap,hid_device,cmd_protocol}.c
-│  ├─ sdkconfig.defaults   # 16MB/QIO/80MHz、HID_COUNT=1、日志全关
-│  └─ README.md            # size 报告 + cmd→函数表
-├─ pc/                     # 零依赖 Python 桥（仅 Pillow）
-│  ├─ agent_bridge.py      # CLI + 协议客户端
-│  ├─ brain.py             # ★ 大脑层：look/point/click/type/key/read_text/run 的原子动作编排
-│  ├─ transport_uart.py    # ctypes 直调 Win32 串口（无 pyserial）
-│  ├─ eyes.py / verify.py  # 截屏 / 像素差分
-│  ├─ mock_p4.py / selftest.py
-│  └─ README.md            # 验收证据 + 命令清单
-└─ tools/
-   ├─ idf.cmd              # ESP-IDF 包装器（cmd）
-   ├─ idf-env.ps1          # 同上（PowerShell，dot-source）
-   ├─ install-ch340-admin.cmd   # ★ 需管理员
-   ├─ check-hid-descriptor.py   # 从 ELF 里解析 HID report descriptor 并校验报告布局
-   └─ flash-and-verify.ps1      # 一键烧录+验收
-```
-
----
-
-## 大脑层（模型怎么真的操作这台电脑）
-
-`pc/brain.py` 是"眼 + 手"的可编排封装，一层命令覆盖看→做→验：
-
-```powershell
-$PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe"
-
-& $PY pc\brain.py --port COM7 look                     # 截屏 + 前台窗口/可见窗口/光标
-& $PY pc\brain.py --port COM7 point 1200 400           # 绝对坐标（相对移动闭环收敛）
-& $PY pc\brain.py --port COM7 click 1200 400 --count 2 # 定位后双击
-& $PY pc\brain.py --port COM7 type "hello" --cps 20    # HID 打字
-& $PY pc\brain.py --port COM7 key ctrl+s               # 组合键（ctrl/alt/shift/win 自动归一）
-& $PY pc\brain.py wins                                 # 列窗口（不占串口）
-& $PY pc\brain.py --json --port COM7 run --script plan.json   # 一次连接跑整组动作
-```
-
-关键能力与实测：
-
-| 能力 | 做法 | 实测 |
-|---|---|---|
-| 绝对坐标鼠标 | 读 `GetCursorPos()` 做反馈，位移仍由板子发 | `(822,820)→(2000,1000)` 5 次迭代命中，误差 0 |
-| 文本读屏 | `ctrl+a`→`ctrl+c`→读剪贴板（读完还原用户剪贴板） | 运行框内读回成功；Win11 记事本内不可靠 |
-| 键名归一 | `ctrl/alt/shift/win` → `leftctrl/leftalt/leftshift/leftgui` | 上层只写 `ctrl+s` |
-| 失败即停 | 每步返回 `{ok,...}`，默认中止 | 演示中靠它拦住了往 README.md 灌字 |
-
-**诚实前提**：`look` 产出 PNG，**没有图像输入能力的模型用不上**，这类模型应走 `wins` + `read_text` + `diff` 的文本通道。
-细节、动作全表与真机演示记录见 [docs/brain-usage.md](docs/brain-usage.md)。
-
----
-
-## 关键设计决策（都是踩过坑之后的定论）
-
-| 决策 | 值 | 为什么 |
-|---|---|---|
-| HID 结构 | 单接口 + Report ID 1=键盘 / 2=鼠标 | 与 IDF 官方 `tusb_hid` 例程一致，Windows 免驱识别为键鼠两个设备 |
-| 端点 bInterval | **4** | HS 下 2³×125µs = **1 ms/帧**；用 10 会变成 **64 ms/帧**，拆帧移动和打字直接不可用 |
-| VID/PID | 0x303A / **0x4004**（esp_tinyusb 默认） | 不自定义 PID，少一个配置面 |
-| 挂载事件 | 25 ms 轮询 `tud_mounted()` 边缘检测 | esp_tinyusb v2 把 `tud_mount_cb`/`tud_umount_cb` 收进组件内部，应用再定义会 `multiple definition` 链接失败 |
-| 协议通道 | UART0（GPIO37 TX / GPIO38 RX）115200 8N1，JSON-lines | 数据手册实锤 UART0 引脚；GPIO37/38 虽是 strapping 但 Boot Mode 表允许任意值 |
-| 日志 | 默认 `ESP_LOG_NONE` | UART0 是协议通道，日志会污染 JSON 流 |
-| 安全释放 | 1500 ms 无报文自动全抬 + 退出/拔出释放 | 防止按键卡死在目标机上 |
-| **芯片版本** | `ESP32P4_SELECTS_REV_LESS_V3=y` + `REV_MIN_100=y` | **实测这块板是 rev v1.3（早期硅片）**；IDF 5.5 默认按 v3.1+ 编译，两者 Kconfig 互斥，不设必烧录失败。见 hardware-facts §11.1 |
-| **`release_all` 免限流** | 限流判断放在解析 `cmd` 之后，`release_all` 短路放行 | 实测 200 帧风暴后 `release_all` 被 `rate_limited` 拒绝 = 唯一能抬键的命令失效。见 protocol §9.6 |
-| **RX 用 UART 事件队列** | `xQueueReceive` + `uart_read_bytes(..., ticks_to_wait=0)` | IDF 的 `uart_read_bytes` 会为每个缺失字节各等一次超时；256 字节缓冲 + 20 ms 超时让 ping 多花 20 ms。见 protocol §9.7 |
-| Flash | 16 MB / 80 MHz / QIO | `--flash_mode dio` 是正常的：IDF 源码注释明确"烧录用 dio，bootloader 启动后升级 quad" |
-
----
-
-## 已知缺口（诚实版）
-
-1. **绝对坐标鼠标**：HID boot mouse 只能相对移动，没有"直接跳到 (x,y)"。要的话得加绝对定位 HID。
-2. **C6 Wi-Fi / UDP 通道**：`pc/transport_tcp.py` 是明确报错的 stub，固件只做 UART。
-3. **Consumer control（音量/媒体键）**：未做。
-4. **限流窗口是固定 1 秒桶**：跨桶边界的连发可能不触发限流（实测 250 帧后紧跟的 5 条普通命令全放行）。不是安全缺陷（`release_all` 免限流），但要严格限速得改滑动窗口。见 protocol §7.2。
-5. **`key_tap` 的 ack 含 hold_ms**：默认 30 ms，所以 ack ≈ 42 ms 是设计使然；测链路延迟请用 `ping`/`mouse_move`。
-6. **只插一个口会"半身不遂"**：UART 口=脑（指令），高速口=手（HID）。`host_mounted=False` 就是没插高速口。
-7. **首次开串口会复位板子一次**：CH340 的 DTR/RTS 抖动导致，PC 侧已对只读命令补发一次，会动键鼠的命令绝不重发。
-8. **大脑层还不能闭环自纠**：`read_text` 在部分应用（Win11 记事本）读不全，`ctrl+a` 不选中；只靠 `wins`+`read_text` 的文本模型拿不到控件级信息，需要接 UI Automation 或加 OCR。
-9. **Win+R 自动补全**：打 `notepad` 可能被补成上次的完整命令（曾差点把字打进 README.md）。任何盲打前必须 `wins` 验证前台标题。
-10. **仅图片可验证项**：三个 Type-C 口的一一对应、1 A 保险丝、双口供电接法、下载模式的物理实现方式 —— 本 AI 无视觉能力，未复核原理图，见 hardware-facts §2/§6.2/§1.5。
-11. **修饰键可能卡在"按下"状态**：HID 键盘只发了按下、没发抬起（脚本崩了 / 设备重置 / 别的软件只按不抬），
-    表现是**滚轮只缩放不滚动、点击变多选、拖拽变框选**。一行修复：
-    `python tools\hid-panic.py`（板子 `release_all` + Windows 侧 SendInput 补发所有修饰键/鼠标键抬起 + 复查）。
-    2026-10-18 实遇到过一次（左 Ctrl 卡住），已修复并做成工具。
-
----
-
-## 本机环境
-
-| 项 | 值 |
+| 路径 | 内容 |
 |---|---|
-| ESP-IDF | `D:\esp\idf-full\esp-idf-v5.5.6`（**官方完整包**，含 `.git`+全部 submodule） |
-| 工具链 | `D:\esp\.espressif`（riscv32-esp-elf 14.2.0 / cmake 3.30.2 / ninja 1.12.1 / openocd） |
-| Python env | `D:\esp\python_env` |
-| PC 端解释器 | `%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe`（3.12.14 + Pillow 12.3.0） |
-| Git | `C:\Program Files\Git\cmd`（2.55.0.5） |
-
-> **坑 1**：GitHub 自动源码 tarball 不含 submodule（`tlsf`/`cJSON`/`micro-ecc` 全空）→ 必然编译失败，必须用官方 `esp-idf-v5.5.6.zip`（2 GB）。
-> **坑 2**：`python` 必须解析到 `D:\esp\python_env\Scripts\python.exe`，否则 `idf.py` 报 `No module named 'click'`。
-> **坑 3**：本机 PowerShell 执行策略禁止 dot-source `.ps1`，用 `tools\idf.cmd` 或先 `Set-ExecutionPolicy -Scope Process Bypass`。
-> **坑 4**：这块板是 **P4 rev v1.3**，必须 `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`，否则 `bootloader.bin requires chip revision in range [v3.1 - v3.99]`。**别用 `esptool --force` 绕过**（会缺 errata 补丁）。
-> **坑 5**：改 `sdkconfig.defaults` 后必须**删掉 `sdkconfig`** 再 build，否则旧值不会被覆盖。
-> **坑 6**：商家 RAR 里的 CH340 驱动是 2009 年**无签名** INF，Win11 拒装。用 Microsoft Update Catalog 的 `wch.cn - Ports - 3.9.2024.9`（签名有效），见 hardware-facts §11.2。
+| `firmware/` | ESP-IDF 固件（纯 ESP-IDF，不用 Arduino） |
+| `pc/` | PC 侧桥：`hub.py` 服务、`brain.py` 动作接口、协议实现 |
+| `tools/` | `connector.py` 连接器 + 指针标定 + 图片转笔画 |
+| `web/` | 板子状态网页仪表盘 |
+| `docs/` | 硬件事实、协议、标定、排障、操作手册 |
+| `inbox/` | 本地素材与产物（不参与版本库） |
 
 ---
 
-## 上游与出处
+## 文档
 
-- 上游项目：`BSGGPRO/esp32p4-iphone-agent`（源自 `onehumanbeing/esp32-iphone-agent`，从控 iPhone 泛化为控任意 Windows 电脑）
-- 商家资料：`%USERPROFILE%\Downloads\JC-ESP32P4-M3-DEV`（原理图/规格书/手册/例程/烧录工具）
-- License: MIT
+| 文档 | 讲什么 |
+|---|---|
+| [docs/field-guide.md](docs/field-guide.md) | 单文件全量手册：架构 / 自检 / 接口 / 排障 |
+| [docs/operations.md](docs/operations.md) | 日常操作约定与安全红线 |
+| [docs/protocol.md](docs/protocol.md) | 串口/TCP 协议（v1.2，冻结） |
+| [docs/hardware-facts.md](docs/hardware-facts.md) | 板子实测：芯片、时序、供电、TF 卡 |
+| [docs/pointer-calibration.md](docs/pointer-calibration.md) | 指针标定：1 px 精度的来由 |
+| [docs/bringup-runbook.md](docs/bringup-runbook.md) | 从零到跑通的步骤 |
+| [docs/brain-usage.md](docs/brain-usage.md) | `brain.py` 接口用法 |
+| [docs/image-to-draw.md](docs/image-to-draw.md) | 图片转笔画与绘制 |
+
+---
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。

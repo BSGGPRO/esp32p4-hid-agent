@@ -1,6 +1,6 @@
 ﻿
 ### 1) agent_bridge.py --help
-> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py --help
+> $PY <repo>\pc\agent_bridge.py --help
 usage: agent_bridge.py [-h] [--transport {uart,tcp,mock}] [--port PORT]
                        [--baud BAUD] [--host HOST] [--timeout SEC] [--no-wait]
                        [--repeat N] [--no-release-on-exit] [--json] [--stats]
@@ -83,7 +83,7 @@ By default the bridge sends release_all on exit (§6.4); use --no-release-on-exi
 exit=0
 
 ### 2) agent_bridge.py --list-ports
-> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py --list-ports
+> $PY <repo>\pc\agent_bridge.py --list-ports
 COM    型号/Model                                VID:PID     建议/Advice                         总线/Bus
 --------------------------------------------------------------------------------------------------------------
 COM4   Bluetooth 虚拟串口                          -           跳过：蓝牙虚拟口，不是开发板                    BTHENUM
@@ -98,7 +98,7 @@ COM5   Bluetooth 虚拟串口                          -           跳过：蓝�
 exit=0
 
 ### 3) agent_bridge.py selftest
-> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py selftest
+> $PY <repo>\pc\agent_bridge.py selftest
 == agent_bridge selftest（内置 mock P4，无硬件 / no hardware required）==
   解释器/interpreter : 3.12.14 (%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe)
   Pillow            : 12.3.0  (唯一第三方依赖 / only 3rd-party dep)
@@ -151,19 +151,19 @@ exit=0
 exit=0
 
 ### 4) agent_bridge.py screenshot evidence/screenshot_acceptance.png --min-bytes 51200
-> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py screenshot %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\screenshot_acceptance.png --min-bytes 51200
-SCREENSHOT OK  %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\screenshot_acceptance.png
+> $PY <repo>\pc\agent_bridge.py screenshot <repo>\pc\evidence\screenshot_acceptance.png --min-bytes 51200
+SCREENSHOT OK  <repo>\pc\evidence\screenshot_acceptance.png
   尺寸/size : 2560 x 1440
   文件/bytes: 990688 B (967.5 KiB)
   DPI 模式  : per-monitor-aware  (grabbed 2560x1440)
   屏幕校验  : matches primary
 exit=0
 
-文件: %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\screenshot_acceptance.png
+文件: <repo>\pc\evidence\screenshot_acceptance.png
 字节数: 990688 bytes (967.5 KiB)
 
 ### 5) eyes.py --info
-> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\eyes.py --info
+> $PY <repo>\pc\eyes.py --info
 主屏/primary      : (2560, 1440)
 虚拟桌面/virtual  : (2560, 1440) @ (0, 0)
 DPI 模式          : per-monitor-aware
@@ -180,7 +180,7 @@ RESULT: 除 Pillow 外零第三方依赖 / stdlib + Pillow only -> OK
 exit=0
 
 ### 7) agent_bridge.py e2e-demo --transport mock --outdir evidence --dx 120
-> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py e2e-demo --transport mock --outdir %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence --dx 120
+> $PY <repo>\pc\agent_bridge.py e2e-demo --transport mock --outdir <repo>\pc\evidence --dx 120
 python.exe : [info] mock 传输：仅协议回环，不驱动真实 HID / mock: protocol loopback only
 所在位置 行:7 字符: 8
 +   $o = & $py @argv 2>&1 | Out-String; $c = $LASTEXITCODE
@@ -191,12 +191,12 @@ python.exe : [info] mock 传输：仅协议回环，不驱动真实 HID / mock: 
 [事件/evt] boot t=0 {'fw': 'P4-HID-1.0', 'proto': '1.0'}
 [事件/evt] hid_mounted t=0
 [1/5] ping OK  fw=P4-HID-1.0  proto=1.0  host_mounted=True  caps=hid_keyboard,hid_mouse,uart
-[2/5] 截屏 before / shot before: %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png  2560x1440  999166 B
+[2/5] 截屏 before / shot before: <repo>\pc\evidence\e2e_before.png  2560x1440  999166 B
 [3/5] mouse_move dx=120 dy=0 -> {'ok': True, 'id': 2, 't': 202, 'dx': 120, 'dy': 0, 'reports': 1}
-[4/5] 截屏 after / shot after:  %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png  2560x1440  991369 B
+[4/5] 截屏 after / shot after:  <repo>\pc\evidence\e2e_after.png  2560x1440  991369 B
 [5/5] 差分 / diff:
-      [A] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png  2560x1440
-      [B] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png  2560x1440
+      [A] <repo>\pc\evidence\e2e_before.png  2560x1440
+      [B] <repo>\pc\evidence\e2e_after.png  2560x1440
       比较区域/region : 全图 (full image)
       变化像素/changed: 5763 / 3686400
       变化比例/ratio  : 0.1563%
@@ -208,9 +208,9 @@ python.exe : [info] mock 传输：仅协议回环，不驱动真实 HID / mock: 
 exit=0
 
 ### 8) agent_bridge.py verify evidence/e2e_before.png evidence/e2e_after.png
-> $PY %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\agent_bridge.py verify %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png
-[A] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_before.png  2560x1440
-[B] %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\evidence\e2e_after.png  2560x1440
+> $PY <repo>\pc\agent_bridge.py verify <repo>\pc\evidence\e2e_before.png <repo>\pc\evidence\e2e_after.png
+[A] <repo>\pc\evidence\e2e_before.png  2560x1440
+[B] <repo>\pc\evidence\e2e_after.png  2560x1440
 比较区域/region : 全图 (full image)
 变化像素/changed: 5763 / 3686400
 变化比例/ratio  : 0.1563%

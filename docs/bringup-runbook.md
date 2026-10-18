@@ -64,7 +64,7 @@
 ### 2.1 推荐：`idf.py flash`（一条命令，地址自动）
 
 ```powershell
-cd %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\firmware
+cd <repo>\firmware
 cmd /c "..\tools\idf.cmd -p COM7 flash"
 ```
 
@@ -107,7 +107,7 @@ cmd /c "..\tools\idf.cmd -p COM7 -b 460800 flash"
 
 ```powershell
 $PY = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
-cd %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc
+cd <repo>\pc
 
 & $PY agent_bridge.py --list-ports          # 认出 CH340 那行
 & $PY agent_bridge.py ping   --port COM7    # 期望 ok:true, proto:"1.0", host_mounted:true

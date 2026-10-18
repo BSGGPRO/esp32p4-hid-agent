@@ -19,7 +19,7 @@
 ### 环境（绝对路径，照抄）
 
 ```
-仓库     %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+仓库     <repo>
 Python   %USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
          （3.12；有 Pillow；没有 pyserial —— 用 tcp 透传不需要）
 hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221:8765）
@@ -30,10 +30,50 @@ hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221
 
 ---
 
+## 0.5 操作约定（这台机器的固定做法）
+
+| 角色 | 用什么 | 说明 |
+|---|---|---|
+| **手** | 板子（USB HID 键鼠，`brain.py --transport tcp`） | 所有键鼠操作都走硬件，不用软件注入 |
+| **眼** | 本地视觉模型（可选，见下方） | 回答「这块区域是什么」这类判断题 |
+| **事实** | Win32 窗口列表 + RapidOCR | 标题、坐标、数字以它为准；模型会编 |
+
+### 唯一入口：`tools/connector.py`
+
+要做的事写成一份 JSON，从 stdin 喂进连接器，执行完即结束，**不落任何文件**：
+
+```json
+{"steps": [
+  {"op": "restore", "title": "微信"},
+  {"op": "find", "text": "文件传输助手", "rect": [1200, 120, 2290, 400], "as": "hdr"},
+  {"op": "see", "q": "这块区域是什么界面？", "rect": [1200, 120, 2290, 500]},
+  {"op": "recipe", "name": "wechat-send", "to": "文件传输助手", "pieces": ["py:nihao"]},
+  {"op": "recipe", "name": "open-url", "url": "https://www.bilibili.com", "expect": "哔哩哔哩"}
+]}
+```
+
+操作：`restore` / `focus` / `title` / `key` / `type` / `click` / `point` / `move` / `drag` /
+`drag_path` / `hold` / `scroll` / `wait` / `look` / `ocr` / `find` / `see` / `diff` /
+`wait_change` / `read_text` / `clip` / `launch` / `recipe`。
+
+- 视觉模型按需加载：一次作业里多个 `see` 只加载一次；模型缓存在本地，离线加载即可。
+- 模型会把「任务栏里有某图标」说成「前台是某程序」——前台窗口这类事实用 Win32 查。
+
+### 安全红线
+
+1. **不动用户窗口**：不移动、不缩放、不最大化；只为目标窗口做还原 / 置前。
+2. **动手前核对目标**：窗口标题、会话标题必须先 OCR/Win32 确认，对不上就停手。
+3. 一次只用一个透传客户端，用完立刻 `release()`；ESC 必须能立刻停。
+4. 中文走输入法：`py:<拼音>` 出候选再选字，`raw:<ascii>` 直接敲字母；微信里 Ctrl+V 粘不进去。
+5. 不可逆动作（发消息、删文件、转账）一律先核对再落键。
+6. 独占全屏程序（游戏等）在前台时不投键鼠：按键会被吞掉。
+
+---
+
 ## 1. 自检（5 条命令，跑通 = 你已接上）
 
 ```bat
-cd /d %USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent
+cd /d <repo>
 
 :: ① 板子活着 + 屏幕/光标信息
 "%USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe" pc\brain.py --transport tcp --json info

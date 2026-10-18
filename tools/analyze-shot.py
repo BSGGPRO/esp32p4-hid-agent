@@ -7,7 +7,7 @@ import json
 import sys
 from PIL import Image
 
-DEFAULT = r"%USERPROFILE%\Documents\deepseek-harness\default-workspace\esp32p4-hid-agent\pc\shot.png"
+DEFAULT = r"<repo>\pc\shot.png"
 
 
 def is_white(px, tol=8):
