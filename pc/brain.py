@@ -36,7 +36,7 @@ import eyes  # noqa: E402
 import verify  # noqa: E402
 from agent_bridge import AgentBridge, BridgeError, ProtocolError  # noqa: E402
 from transport_base import TransportError  # noqa: E402
-from transport_uart import UartTransport  # noqa: E402
+from transport_uart import UartTransport, detect_port  # noqa: E402
 
 u32 = ctypes.windll.user32
 k32 = ctypes.windll.kernel32
@@ -343,8 +343,27 @@ def norm_combo(keys) -> list[str]:
     return out
 
 
+def _resolve_uart_port(port: str) -> str:
+    """决定直连用哪个串口：""/"auto" 自动找板子（detect_port），其余原样用。
+
+    换电脑后 CH340 的 COM 号会变，写死 COM7 就连不上——但探测失败也绝不能
+    让启动挂掉：找不到就回退老的 "COM7"，让后面的 open 去报可读的错误。
+    """
+    want = (port or "").strip()
+    if want and want.lower() != "auto":
+        return want
+    try:
+        found = detect_port()
+        com = (found or {}).get("com")
+        if com:
+            return str(com)
+    except Exception:  # noqa: BLE001 — 枚举串口失败不是致命错，回退默认口
+        pass
+    return "COM7"
+
+
 class Brain:
-    def __init__(self, port: str = "COM7", baud: int = 115200, timeout: float = 1.5,
+    def __init__(self, port: str = "auto", baud: int = 115200, timeout: float = 1.5,
                  verbose: bool = False, transport: str = "uart",
                  host: str = "127.0.0.1", tcp_port: int = 8766,
                  fallback_uart: bool = True):
@@ -363,12 +382,14 @@ class Brain:
                 self.transport_note = "TCP %s:%d 不可用: %s" % (host, tcp_port, exc)
                 if not fallback_uart:
                     raise
-                print("[transport] %s -> 回退 UART %s" % (self.transport_note, port),
+                self.port = _resolve_uart_port(port)      # 回退才去找口
+                print("[transport] %s -> 回退 UART %s" % (self.transport_note, self.port),
                       file=sys.stderr)
                 self.transport_name = "uart"
-                tr = UartTransport(port=port, baud=baud)
+                tr = UartTransport(port=self.port, baud=baud)
         else:
-            tr = UartTransport(port=port, baud=baud)
+            self.port = _resolve_uart_port(port)
+            tr = UartTransport(port=self.port, baud=baud)
         self.bridge = AgentBridge(tr, timeout=timeout, release_on_close=True)
         self.bridge.open()
         self.verbose = verbose
