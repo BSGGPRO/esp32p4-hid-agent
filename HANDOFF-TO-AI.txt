@@ -17,7 +17,7 @@
 
 ★ 本文件导航
     想马上动手      -> 第四部分（自检 5 条命令）+ 第五部分（动作接口）+ 第七部分（画图流程）
-    用户发来图片    -> 第十四部分（图片 -> 笔画 -> 画出来，含手机上传页 /upload）
+    用户发来图片    -> 第十四部分（图片 -> 笔画 -> 画出来，或文字坐标直接画）
     想搞懂原理      -> 第一部分（架构）、第八部分（精度）、第十一部分（协议）
     遇到问题        -> 第十部分（排障）
     只想要状态信息  -> 第十二部分（HTTP 只读接口）
@@ -343,14 +343,6 @@ TCP 透传 127.0.0.1:8766
   · 启动方式全部通过 wscript.exe //B run-hidden.vbs 隐藏窗口，桌面不会弹 CMD
   · 日志/脚本在 C:\ProgramData\dsh\（watchdog.log 等）
   · 手动重启 hub：schtasks /Run /TN dsh-hub；停止：GET /api/shutdown（本机）
-
-带走到别的电脑（换设备）
-  · python tools\make-portable.py 生成 <workspace>\portable-esp32p4-web（约 165 KB，
-    纯标准库，不依赖本仓库）；--zip 出压缩包，--to-drive E: 直接拷到卡/U 盘
-  · 包里 start-dashboard.bat 用 hub --serial auto：自动识别 CH340 串口，
-    换电脑 COM 号变了也不用改；新电脑只需 Python 3.9+，不装第三方包
-  · 手机传图接口已按用户要求删除（GET /upload、POST /api/upload、/api/inbox 全没了）；
-    图片要画请走第十四部分的 --from-plan 文字计划
 
 ================================================================================
  第十三部分 · 仓库结构 / 文档索引
