@@ -12,6 +12,13 @@ Hardware-level input, no driver, no software injection.
 keyboard and mouse: no driver, no injection, no debug port, no cooperation from the target needed.
 Windows sees it exactly like the keyboard on your desk.
 
+![The board typing and verifying on a real machine](docs/demo.gif)
+
+*Recorded on real hardware, no editing: the board moves the cursor into a console, types the command
+one key at a time, then reads the screen back with OCR to verify it. The only thing on screen is an
+empty console opened for the demo (`C:\Windows\Temp`); the pointer is the real cursor, drawn into the
+capture by Windows.*
+
 ```
    ┌──────────────┐   USB HID (keyboard+mouse)  ┌──────────────┐
    │  ESP32-P4    │ ──────────────────────────▶ │   Windows    │
