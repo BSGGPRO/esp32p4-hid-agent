@@ -110,6 +110,8 @@ Two traps found by measuring, both documented in the code comments:
 **Do not ask the model what OCR can answer.** Text, button labels and coordinates go through
 `ocr` / `find` — milliseconds, and they do not guess. `see` is for fuzzy questions like
 "which screen is this" or "what is it stuck on", and it gets a small crop, not the whole desktop.
+It is also capped: one sentence, under 20 characters, 64 tokens — a 3B model that is allowed to
+ramble rambles *and* gets things wrong. `check` is the yes/no form: it only ever answers 是/否.
 
 ### It gives the VRAM back (so gaming stays smooth)
 

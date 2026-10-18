@@ -67,7 +67,7 @@ echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]
 | 窗口 | `restore` `focus` `title` | 还原 / 置前 / 读标题（以 Win32 为准） |
 | 键鼠 | `click` `move` `point` `drag` `drag_path` `hold` `scroll` `key` `type` | `point` 是闭环定位，自己纠偏到目标像素；`click`/`move`/`point` 都认 `on=<find 变量>` |
 | 观察 | `look` `ocr` `find` `diff` `wait_change` `read_text` | `find` 在区域里找一段文字并返回中心点 |
-| 视觉 | `see` `check` `vision` | `check` 是是非题（只答「是/否」）；`vision action=unload` 立刻还显存 |
+| 视觉 | `see` `check` `vision` | `check` 是是非题（只答「是/否」）；`see` 默认只要一句话（20 字内）；`vision action=unload` 立刻还显存 |
 | 系统 | `clip` `launch` `wait` | 剪贴板读写 / 启动程序 / 等待 |
 | 组合 | `recipe` | `wechat-send`、`open-url` —— 带完整核对的成品动作 |
 

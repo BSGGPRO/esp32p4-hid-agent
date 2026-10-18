@@ -28,8 +28,9 @@
     ocr       rect=[x0,y0,x1,y1]          逐行文字+坐标（常驻 RapidOCR，小框约 120 ms）
     find      text=<...> [rect=..] [thresh=0.7] [as=名字]
                                           在区域里找一行字，存成变量（含中心点）
-    see       q=<问题> [rect=..] [speed=fast|normal|fine] [longest=N] [max_new_tokens=32]
+    see       q=<问题> [rect=..] [speed=fast|normal|fine] [longest=N] [max_new_tokens=64]
                                           speed: fast=长边480 / normal=640(默认) / fine=1280
+                                          默认只要一句话（20 字内）；要细节就加大 max_new_tokens
     check     q=<问题> [rect=..] [speed=fast]   是非题：只让它回「是/否」，结果在 yes 字段
     vision    [action=status|start|stop|unload] 常驻视觉服务（unload 立刻还显存，打游戏前用）
 
@@ -281,26 +282,40 @@ def _yesno(text: str):
 def check(question: str, rect=None, speed: str = "fast", max_new_tokens: int = 8) -> dict:
     """是非题：只让它回答「是 / 否」。选择题比开放问答更快也更准。"""
     prompt = "看图，只回答一个字：是 或 否。不要解释。问题：" + question
-    ans = see(prompt, rect, speed=speed, max_new_tokens=max_new_tokens)
+    ans = _see_raw(prompt, rect, 0, max_new_tokens, speed)
     yes = _yesno(ans)
     if yes is None:                    # 答跑偏了就再问一次，这次给多一点思考空间
-        ans = see(prompt, rect, speed="normal", max_new_tokens=24)
+        ans = _see_raw(prompt, rect, 0, 24, "normal")
         yes = _yesno(ans)
     if yes is None:
         raise RuntimeError("问不出是/否（模型答：%r）" % (ans or "")[:60])
     return {"yes": yes, "answer": ans}
 
 
-def see(question: str, rect=None, longest: int = 0, max_new_tokens: int = 200,
+_BRIEF = "用一句话回答，不超过 20 个字，不要解释。问题："
+
+
+def see(question: str, rect=None, longest: int = 0, max_new_tokens: int = 0,
         speed: str = "normal") -> str:
-    """问一句"这是什么"。默认 640 长边（1.8 秒）；speed=fast 用 480（0.7 秒），fine 用 1280。"""
+    """问一句"这是什么"。
+
+    默认只许它说一句话（20 字内、64 token 到顶）：3B 模型一旦放开就会长篇大论，
+    说得多错得也多，还慢。要细节就自己给 max_new_tokens。
+    """
+    return _see_raw(_BRIEF + question, rect, longest, max_new_tokens, speed)
+
+
+def _see_raw(prompt: str, rect=None, longest: int = 0, max_new_tokens: int = 0,
+             speed: str = "normal") -> str:
     if not longest:
         longest = {"fast": 480, "normal": 640, "fine": 1280}.get(speed, 640)
+    if not max_new_tokens:
+        max_new_tokens = 64
     im = _shot(rect, longest)
-    ans = _see_daemon(im, question, max_new_tokens)
+    ans = _see_daemon(im, prompt, max_new_tokens)
     if ans is not None:
         return ans
-    return _see_local(im, question, max_new_tokens)
+    return _see_local(im, prompt, max_new_tokens)
 
 
 def _see_daemon(im, question: str, max_new_tokens: int):
@@ -630,7 +645,7 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
 
                 elif op == "see":
                     ans = see(st["q"], st.get("rect"), int(st.get("longest", 0)),
-                              int(st.get("max_new_tokens", 200)),
+                              int(st.get("max_new_tokens", 0)),
                               str(st.get("speed", "normal")))
                     rec["answer"] = ans
                     if _last.get("vision_ms") is not None:
