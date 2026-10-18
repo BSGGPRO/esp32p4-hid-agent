@@ -295,9 +295,52 @@ def plan_grid(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     return strokes, {"mode": "grid", "cell": cell, "grid": [cols, rows]}
 
 
+def plan_engrave(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
+    """多级等值线（版画/雕刻风格）：把灰度按若干阈值切层，逐层取轮廓线。
+
+    比 sketch 多保留明暗层次（中间调不再是空白），比逐像素排线省很多笔画
+    —— 轮廓线本身连续，同样墨量下路径更短、更像"画画"。
+    """
+    if isinstance(args.levels, str):
+        levels = [float(v) for v in args.levels.replace(" ", "").split(",") if v]
+    else:
+        levels = [float(v) for v in args.levels]
+    if not levels:
+        levels = [90.0, 130.0, 170.0, 210.0]
+    scale = min(W / float(img.width), H / float(img.height))
+    nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
+    small = img.resize((nw, nh), Image.LANCZOS)
+    g = _gray_array(small)
+    ox, oy = (W - nw) // 2, (H - nh) // 2
+    strokes: list = []
+    per_level: list[int] = []
+    for thr in levels:
+        mask = g < thr
+        if not mask.any():
+            per_level.append(0)
+            continue
+        skel = thin_zhang_suen(mask)
+        raw = trace_skeleton(skel)
+        cnt = 0
+        for line in raw:
+            if len(line) < args.min_len:
+                continue
+            simp = rdp([(float(x), float(y)) for x, y in line], args.simplify)
+            if len(simp) < 2:
+                continue
+            strokes.append([[x + ox, y + oy] for x, y in simp])
+            cnt += 1
+        per_level.append(cnt)
+    meta = {"mode": "engrave", "source": "iso(levels=%s)" % levels,
+            "image_scaled": [nw, nh], "levels": per_level}
+    return strokes, meta
+
+
 def plan(img: Image.Image, W: int, H: int, args):
     if args.mode == "grid":
         strokes, meta = plan_grid(img, W, H, args)
+    elif args.mode == "engrave":
+        strokes, meta = plan_engrave(img, W, H, args)
     else:
         strokes, meta = plan_line(img, W, H, args)
     meta["strokes"] = len(strokes)
@@ -556,13 +599,16 @@ def main(argv=None) -> int:
     ap.add_argument("image", nargs="?", help="图片路径（任意格式先跑 tools/ingest-image.py）")
     ap.add_argument("--from-plan", default=None,
                     help="文字计划：plan JSON，或每行 'x,y x,y ...' 的文本（也认 # 注释、canvas:x1,y1,x2,y2）")
-    ap.add_argument("--mode", default="line", choices=["line", "sketch", "grid"])
+    ap.add_argument("--mode", default="line",
+                    choices=["line", "sketch", "grid", "engrave"])
     ap.add_argument("--canvas", default=None, help="'x1,y1,x2,y2' 或 '宽x高'；不给就检测画图窗口")
     ap.add_argument("--margin", type=int, default=24, help="画布内边距 px")
     ap.add_argument("--thresh", type=float, default=150, help="line/grid 阈值（暗=墨）")
     ap.add_argument("--edge", type=float, default=45, help="sketch 的 Sobel 阈值")
     ap.add_argument("--blur", type=float, default=1.2, help="sketch 模糊半径")
     ap.add_argument("--cell", type=int, default=10, help="grid 的格子边长")
+    ap.add_argument("--levels", default="90,130,170,210",
+                    help="engrave 的灰度分层（逗号分隔，值越小只留最暗处）")
     ap.add_argument("--min-len", type=int, default=6, help="丢弃短于该长度(px)的折线")
     ap.add_argument("--simplify", type=float, default=1.2, help="RDP 简化容差 px")
     ap.add_argument("--dilate", action="store_true", help="笔画偏细时先膨胀 1 px")
@@ -680,6 +726,7 @@ def main(argv=None) -> int:
     summary = {"ok": True, "mode": meta.get("mode") or a.mode, "canvas_box": box,
                "image": ({"size": list(img.size)} if img is not None else None),
                "meta": meta, "strokes": len(strokes_win), "vertices": n_verts,
+               "est_seconds": round(est_s, 1),
                "similarity": similarity,
                "preview": prev_path, "plan": plan_path, "draw": bool(a.draw)}
 

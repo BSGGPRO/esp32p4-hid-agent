@@ -105,6 +105,10 @@
     "tools/draw-image.py <图> --mode sketch --edge 40",
     "tools/draw-image.py <图> --mode grid --cell 10 --canvas 0,0,600,600",
     "tools/draw-image.py <图> --mode line --preview-width 4 --draw   # 真画",
+    "tools/draw-image.py <图> --mode engrave --levels 90,125,160,195,225 --draw   # 照片级（等值线）",
+    "tools/photo-to-draw.py 照片.jpg --quality good        # 照片一键：只预览",
+    "tools/photo-to-draw.py 照片.jpg --quality good --draw # 照片一键：真画（1-3 分钟）",
+    "照片转画.bat                                           # 双击：选照片/预览/开始画的小窗口",
     "tools/draw-image.py --from-plan plan.txt        # 图片转成坐标文字后直接画",
     "tools/draw-image.py --from-plan plan.json       # 重放本工具输出的计划"
   ],
@@ -115,7 +119,14 @@
     "modes": {
       "line": "线稿/卡通/logo；实测 pearson 0.92 / ink_iou 0.75（cat 26 笔 193 顶点 ~4 s）",
       "sketch": "照片/复杂图（铅笔速写）；实测 pearson 0.73 / ink_iou 0.69（42 笔 492 顶点 ~7 s）",
-      "grid": "小图标/像素风（按格点墨，164 点 @12px 格）"
+      "grid": "小图标/像素风（按格点墨，164 点 @12px 格）",
+      "engrave": "照片（等值线/版画风）：多层阈值切层取轮廓；900 画布 5 层 pearson 0.68 / ink_iou 0.79，但 3100 笔 2.2 万顶点约 8 分钟；482 小画布只有 0.21-0.35（线细、覆盖不足）"
+    },
+    "photo_program": {
+      "cli": "tools/photo-to-draw.py <照片> --quality quick|good|hd [--draw]",
+      "gui": "照片转画.bat / tools/photo-draw-gui.py（选照片 -> 预览 -> 开始画）",
+      "presets": {"quick": "3 层 30-60s", "good": "5 层 1-3min", "hd": "7 层 3-8min"},
+      "limits": "1px 铅笔笔画无法无损还原照片；清晰度第一瓶颈是画布尺寸（画图窗口白画布 482x483 太小），第二是笔画预算"
     },
     "text_plan": "tools/draw-image.py --from-plan plan.txt|plan.json：一行一条折线，数字按 x,y 配对，支持 canvas:/分号分多段/注释；适合让能看图的模型先把图转成坐标文字",
     "speed": "约 12 ms/顶点 + 60 ms/笔；上千顶点先看 est_seconds 再决定是否减笔画",

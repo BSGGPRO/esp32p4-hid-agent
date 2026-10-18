@@ -108,7 +108,7 @@ WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 def list_windows() -> list[dict]:
     """可见的顶层窗口：标题、矩形、pid、是否前台。"""
     out: list[dict] = []
-    fg = u32.GetForegroundWindow()
+    fg = int(u32.GetForegroundWindow() or 0)   # 没有前台窗口时是 NULL，别拿 None 去 int()
 
     def _cb(hwnd, _lparam):
         if not u32.IsWindowVisible(hwnd):
@@ -130,7 +130,7 @@ def list_windows() -> list[dict]:
             "title": title,
             "pid": int(pid.value),
             "rect": [int(r.left), int(r.top), int(r.right), int(r.bottom)],
-            "foreground": int(hwnd) == int(fg),
+            "foreground": int(hwnd) == fg,
             "minimized": bool(u32.IsIconic(hwnd)),
         })
         return True

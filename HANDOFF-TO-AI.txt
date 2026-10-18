@@ -392,8 +392,15 @@ TCP 透传 127.0.0.1:8766
 
 【Step 2 规划（不碰鼠标）】
   python tools\draw-image.py "<图>" --mode line   --canvas 0,0,1000,1000 --preview-width 4
+  python tools\draw-image.py "<图>" --mode engrave --levels 90,125,160,195,225
   python tools\draw-image.py "<图>" --mode sketch --edge 40
   python tools\draw-image.py "<图>" --mode grid   --cell 10 --canvas 0,0,600,600
+  ★ 照片首选 engrave（多层等值线/版画风）：同图 900 画布 sketch 只有 pearson 0.18，
+    engrave 能到 0.68；但笔画多（3000+ 笔、2 万顶点、约 8 分钟）。
+  ★ 更省事：python tools\photo-to-draw.py 照片.jpg --quality quick|good|hd [--draw]
+    或者让用户双击「照片转画.bat」自己选照片/预览/开始画。
+  ★ 画布大小是第一瓶颈：画图窗口白画布只有 482x483 时 engrave 只有 0.21-0.35。
+    想要更像必须放大画布（不要最大化，跟用户确认过再动窗口）。
   输出：strokes 笔数、vertices 顶点数、est_seconds 预估秒数、
         similarity{pearson, ink_iou} 像不像的数值，以及
         inbox\plan-*-preview.png（预览图，可以给能看图的模型或用户看）

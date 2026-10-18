@@ -99,6 +99,39 @@ python tools\draw-image.py "inbox\ascii-xxx.png" --mode sketch --draw
 `rows ≈ H/W × cols ÷ 2`，反推原图高宽比 `H/W ≈ 2×rows/cols`。
 实测样例：1000×1086 → 原图约 1080×2340（手机截图比例），故 `--aspect 2.0`。
 
+## 5c. 照片 → 画：一键程序（2026-10-18 上午，响应「导入照片就能画」）
+
+```powershell
+# 双击仓库根的「照片转画.bat」= 小窗口：选照片 -> 质量 -> ①预览(不动鼠标) -> ②开始画
+# 或者命令行：
+python tools\photo-to-draw.py 照片.jpg                       # 只预览（安全）
+python tools\photo-to-draw.py 照片.jpg --quality good --draw  # 真画
+```
+
+质量档位（`tools/photo-to-draw.py` 里的 PRESETS）：
+
+| 档 | 等值线层数 | 精度 | 用途 |
+|---|---|---|---|
+| `quick` | 3 层（95/150/205） | 粗 | 30 秒-1 分钟，先看构图 |
+| `good` | 5 层（90/125/160/195/225） | 中 | 默认，1-3 分钟 |
+| `hd` | 7 层（70…220） | 细 | 3-8 分钟，细节最多 |
+
+引擎是 `draw-image.py --mode engrave`：把灰度按多层阈值切层、逐层取轮廓线
+（铜版画/等值线风格）。**为什么不用 sketch**：实测同一张 900 画布，
+`sketch` 与原图灰度相关只有 0.18；`engrave` 4 层 0.67、5 层 0.68、墨迹重合 0.79。
+画布越小越吃亏：482×483 白画布上 `engrave` 5 层只有 pearson 0.21-0.35
+（线太细、覆盖不足），所以**画布大小是清晰度的第一瓶颈**。
+
+**诚实边界**：板子只有 1 px 铅笔笔画，照片「无损」还原做不到（那是打印机/喷绘的活）。
+能到的是钢笔/版画级还原：明暗层次 + 轮廓可辨认，细节取决于画布尺寸和笔画预算。
+想要更接近照片只有三条路：放大画布（不最大化窗口）、加笔画（时间换质量）、
+或者干脆把图交给打印机（不是"板子画"）。
+
+程序结构：
+- `tools/photo-to-draw.py`：CLI，套 presets 调 `draw-image.py`，输出计划/预览/相似度/真画结果
+- `tools/photo-draw-gui.py`：tkinter 小窗口（选照片、质量下拉、预览、开始画、停止、日志）
+- `照片转画.bat`：双击入口（优先 pythonw，无窗口）
+
 ## 6. 证据
 
 `docs/evidence/image-to-draw-20261018.txt`：多格式 ingest、三种模式的笔画数/相似度、

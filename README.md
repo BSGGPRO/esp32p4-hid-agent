@@ -69,6 +69,23 @@ python tools\draw-image.py --from-plan plan.txt --draw
 实测：猫线稿 26 笔 / 193 顶点 / 约 4 秒，`pearson 0.92` / `ink_iou 0.75`；
 照片速写 42 笔 / 492 顶点 / 约 7 秒。细节见 [`docs/image-to-draw.md`](docs/image-to-draw.md)。
 
+### 照片一键画（双击就能用）
+
+不想记命令就双击仓库根的 **`照片转画.bat`**：选照片 → 选质量 → ①预览（不动鼠标）
+→ 满意了点 ②开始画（板子鼠标真的在画图里画）。命令行等价：
+
+```
+python tools\photo-to-draw.py 照片.jpg                    # 只预览
+python tools\photo-to-draw.py 照片.jpg --quality good --draw
+```
+
+质量档：`quick`(3 层, 0.5-1 min) / `good`(5 层, 1-3 min) / `hd`(7 层, 3-8 min)。
+引擎是 `--mode engrave`（多层等值线，版画风）：同一张图 900 画布下
+`sketch` 只有 `pearson 0.18`，`engrave` 能到 `0.68`。**画布越大越像**——
+现在画图窗口的白画布只有 482×483，是这个环节的第一瓶颈。
+
+诚实边界：1 px 铅笔笔画做不到照片「无损」还原，能给的是钢笔/版画级可辨认画。
+
 ---
 
 ## 快速开始（一条命令，两个口都插好后）
