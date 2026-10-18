@@ -412,17 +412,46 @@ def _blobs(im) -> list:
     return out
 
 
+def _blank(im) -> bool:
+    """几乎一片纯色：PrintWindow 对浏览器这类自绘窗口经常只给空白。"""
+    import numpy as np
+
+    a = np.asarray(im.convert("L").resize((64, 64))).astype(float)
+    return float(a.std()) < 6.0
+
+
+def _screen_shot(rect):
+    """从整屏截图里裁出这块（窗口真的露在屏幕上时，这才是真像素）。"""
+    W, H = screen_size()
+    x0, y0, x1, y1 = [int(v) for v in rect]
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(W, x1), min(H, y1)
+    if x1 - x0 < 60 or y1 - y0 < 40:
+        return None
+    return _screen().crop((x0, y0, x1, y1)), (x0, y0)
+
+
 def ui_map(w: dict, with_buttons: bool = True, max_items: int = 60) -> dict:
     """把一个窗口读成结构：文字行 + 疑似按钮，全部带屏幕坐标。
 
     为什么要有这个：图标按钮没有文字，ocr 看不见；整屏截图又被自己（或者别的窗口）挡住。
     这里用 PrintWindow 渲染窗口本身，再按亮度找块——「这界面上有什么、能点什么」
     一条命令拿全，不用再猜一个界面半小时。
+
+    但 Chromium 这类自绘窗口（浏览器、Electron 程序）PrintWindow 只给空白，
+    所以渲染出来是空白时，退回截屏那块（窗口在前面时屏幕里就是它的真像素）。
     """
+    if w["rect"][0] <= -30000:
+        raise RuntimeError("窗口 %r 是最小化的，先 restore / focus 再读界面" % w["title"])
     im, origin = _hwnd_shot(w["hwnd"])
+    source = "printwindow"
+    if _blank(im):
+        shot = _screen_shot(w["rect"])
+        if shot:
+            im, origin = shot
+            source = "screen"
     if im.width < 120 or im.height < 60:
-        raise RuntimeError("窗口 %r 是最小化的（%dx%d），先 restore / focus 再读界面"
-                           % (w["title"], im.width, im.height))
+        raise RuntimeError("窗口 %r 太小（%dx%d），读不出界面" % (w["title"], im.width, im.height))
     x0, y0 = origin
     texts = []
     for r in _ocr_rows(im):
@@ -433,7 +462,7 @@ def ui_map(w: dict, with_buttons: bool = True, max_items: int = 60) -> dict:
         })
     out = {"hwnd": int(w["hwnd"]), "title": w["title"], "origin": [x0, y0],
            "size": [im.width, im.height], "texts": texts[:max_items],
-           "buttons": [], "source": "printwindow"}
+           "buttons": [], "source": source}
     if not with_buttons:
         return out
     boxes = [(t["x"], t["y"], t["w"], t["h"]) for t in texts]
