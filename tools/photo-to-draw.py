@@ -37,9 +37,9 @@ INBOX = os.path.join(_WORKSPACE, "inbox")
 DRAW = os.path.join(_HERE, "draw-image.py")
 
 PRESETS = {
-    "quick": {"levels": "95,145,200", "simplify": 2.4, "min_len": 10},
-    "good": {"levels": "90,125,160,200", "simplify": 2.2, "min_len": 8},
-    "hd": {"levels": "70,95,120,145,170,195,220", "simplify": 1.6, "min_len": 7},
+    "quick": {"levels": "95,145,200", "simplify": 2.4, "min_len": 10, "brush": 3},
+    "good": {"levels": "90,125,160,200", "simplify": 2.2, "min_len": 8, "brush": 4},
+    "hd": {"levels": "70,95,120,145,170,195,220", "simplify": 1.6, "min_len": 7, "brush": 5},
 }
 
 
@@ -71,6 +71,13 @@ def main(argv=None) -> int:
     ap.add_argument("--no-launch-paint", action="store_true", help="不要自动打开画图")
     ap.add_argument("--no-invert", action="store_true",
                     help="深底照片别反色（默认深底图会反色成负片效果）")
+    ap.add_argument("--brush-size", type=int, default=0,
+                    help="落笔粗细 px（0=按质量档位；1=老式 1px 铅笔；6-10 更像炭笔/马克笔）")
+    ap.add_argument("--brush-kind", default="Brush",
+                    choices=["Brush", "Marker", "Crayon", "OilBrush", "WaterColor", "AirBrush"],
+                    help="笔形（Brush=画笔, Marker=记号笔, Crayon=蜡笔…）")
+    ap.add_argument("--levels", default="", help="覆盖等值线阈值，如 60,110,160,210")
+    ap.add_argument("--simplify", type=float, default=0.0, help="覆盖折线简化强度")
     a = ap.parse_args(argv)
 
     if not os.path.isfile(a.photo):
@@ -82,9 +89,11 @@ def main(argv=None) -> int:
     pres = PRESETS[a.quality]
 
     cmd = [sys.executable, DRAW, a.photo, "--mode", "engrave",
-           "--levels", pres["levels"],
-           "--simplify", str(pres["simplify"]), "--min-len", str(pres["min_len"]),
-           "--preview-width", "4", "--out", base, "--transport", a.transport]
+           "--levels", a.levels or pres["levels"],
+           "--simplify", str(a.simplify or pres["simplify"]),
+           "--min-len", str(pres["min_len"]),
+           "--preview-width", "4", "--out", base, "--transport", a.transport,
+           "--brush-size", str(a.brush_size or pres["brush"]), "--brush-kind", a.brush_kind]
     if a.canvas:
         cmd += ["--canvas", a.canvas]
     if a.no_invert:

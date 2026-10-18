@@ -389,6 +389,38 @@ def render_preview(strokes, W: int, H: int, width: int = 2) -> Image.Image:
 
 
 # --------------------------------------------------------------------------- #
+# 笔形 / 粗细（画图没有命令行参数，靠 UI Automation 设「画笔」和「大小」）
+# --------------------------------------------------------------------------- #
+def set_paint_brush(size: int, brush: str = "Brush") -> dict:
+    """把画图的笔形/粗细设好。
+
+    照片画不好的头号根因是 1 px 铅笔：铅笔/炭笔的线宽约占画面 0.5-1%，
+    而 1 px 在 800 px 画布上只有 0.12%。画图的「画笔」最大 90 px，用 UIA 设。
+    """
+    import subprocess
+    if size <= 1:
+        return {"ok": True, "size": 1, "mode": "pencil"}
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "paint-brush.ps1")
+    if not os.path.exists(script):
+        return {"ok": False, "err": "paint-brush.ps1 missing"}
+    try:
+        out = subprocess.run(["pwsh", "-NoProfile", "-File", script,
+                              "-Size", str(int(size)), "-Brush", brush],
+                             capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "err": repr(exc)}
+    for line in (out.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                pass
+    return {"ok": False, "err": "no json", "stdout": (out.stdout or "")[-300:]}
+
+
+# --------------------------------------------------------------------------- #
 # 执行：快速笔画器（开环 + 周期闭环校正）
 # --------------------------------------------------------------------------- #
 def _gain_table() -> list:
@@ -737,6 +769,11 @@ def main(argv=None) -> int:
     ap.add_argument("--dilate", action="store_true", help="笔画偏细时先膨胀 1 px")
     ap.add_argument("--no-invert", action="store_true",
                     help="深底照片不做反色（默认深底图会反色成'亮处落笔'，负片效果）")
+    ap.add_argument("--brush-size", type=int, default=1,
+                    help="落笔粗细 px（1=1px 铅笔；4-8 更像铅笔/炭笔画，需要画图窗口在前台）")
+    ap.add_argument("--brush-kind", default="Brush",
+                    choices=["Brush", "Marker", "Crayon", "OilBrush", "WaterColor", "AirBrush"],
+                    help="画图的笔形（Brush=画笔, Marker=记号笔, Crayon=蜡笔…）")
     ap.add_argument("--max-strokes", type=int, default=0, help="最多保留多少笔（0=不限）")
     ap.add_argument("--preview-width", type=int, default=2)
     ap.add_argument("--draw", action="store_true", help="真的落笔（默认只规划）")
@@ -839,8 +876,9 @@ def main(argv=None) -> int:
         strokes_canvas = strokes
         strokes_win = [[[p[0] + box[0], p[1] + box[1]] for p in s] for s in strokes]
 
-    # 预览 + 计划落盘
-    prev = render_preview(strokes_canvas, canvas[0], canvas[1], a.preview_width)
+    # 预览 + 计划落盘（预览线宽 = 实际落笔粗细，免得预览比真画细一大截）
+    prev_w = int(a.brush_size) if getattr(a, "brush_size", 0) > 0 else a.preview_width
+    prev = render_preview(strokes_canvas, canvas[0], canvas[1], prev_w)
     prev_path = base + "-preview.png"
     prev.save(prev_path, "PNG")
     similarity = None
@@ -893,6 +931,10 @@ def main(argv=None) -> int:
         if a.clear_canvas:
             clear_canvas()
             time.sleep(0.35)
+        # 清空会把工具切到「选择」，所以设笔形/粗细必须放在清空之后
+        if getattr(a, "brush_size", 1) > 1:
+            summary["brush"] = set_paint_brush(int(a.brush_size), a.brush_kind)
+            time.sleep(0.2)
     log: list = []
     table = _gain_table()
     with Brain(transport=a.transport) as b:
