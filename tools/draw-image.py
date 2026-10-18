@@ -479,16 +479,70 @@ def plan_engrave(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
     return strokes, meta
 
 
+def plan_dots(img: Image.Image, W: int, H: int, args) -> tuple[list, dict]:
+    """网点（点彩）画法：照片切成小格，每格按明暗点一个直径不同的圆点。
+
+    这是唯一真正「像照片」的画法：密集圆点在正常观看距离下就是一张缩小版照片，
+    而且每个点只是一次落笔，成本 ~30 ms，比描线便宜得多。
+    """
+    pitch = float(getattr(args, "pitch", 12.0) or 12.0)
+    levels = max(2, int(getattr(args, "dot_levels", 4) or 4))
+    bmin = float(getattr(args, "dot_min", 2.0) or 2.0)
+    bmax = float(getattr(args, "dot_max", 0.0) or pitch * 0.92)
+    scale = min(W / float(img.width), H / float(img.height))
+    nw, nh = max(2, int(img.width * scale)), max(2, int(img.height * scale))
+    small = img.resize((nw, nh), Image.LANCZOS).convert("L")
+    g = np.asarray(small, dtype=np.float32)
+    ox, oy = (W - nw) // 2, (H - nh) // 2
+    cols, rows = max(1, int(nw / pitch)), max(1, int(nh / pitch))
+    strokes: list = []
+    tiers: list = []
+    sizes: list = []
+    for t in range(1, levels):
+        start = len(strokes)
+        for r in range(rows):
+            y0, y1 = int(r * pitch), int((r + 1) * pitch)
+            for c in range(cols):
+                x0, x1 = int(c * pitch), int((c + 1) * pitch)
+                block = g[y0:y1, x0:x1]
+                if block.size == 0:
+                    continue
+                dark = 1.0 - float(block.mean()) / 255.0
+                if int(round(dark * (levels - 1))) != t:
+                    continue
+                cx = ox + (x0 + x1) * 0.5
+                cy = oy + (y0 + y1) * 0.5
+                strokes.append([[cx, cy], [cx, cy]])
+        tiers.append([start, len(strokes)])
+        sizes.append(round(bmin + (bmax - bmin) * t / float(levels - 1), 1))
+    meta = {"mode": "dots", "source": "dots(pitch=%s levels=%s)" % (pitch, levels),
+            "image_scaled": [nw, nh], "tiers": tiers, "tier_sizes": sizes}
+    return strokes, meta
+
+
+def render_preview_dots(strokes, meta, W: int, H: int) -> Image.Image:
+    im = Image.new("RGB", (W, H), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    for (start, end), size in zip(meta.get("tiers") or [], meta.get("tier_sizes") or []):
+        r = max(0.8, float(size) / 2.0)
+        for s in strokes[start:end]:
+            x, y = s[0]
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(20, 20, 20))
+    return im
+
+
 def plan(img: Image.Image, W: int, H: int, args):
     if args.mode == "grid":
         strokes, meta = plan_grid(img, W, H, args)
     elif args.mode == "engrave":
         strokes, meta = plan_engrave(img, W, H, args)
+    elif args.mode == "dots":
+        strokes, meta = plan_dots(img, W, H, args)
     else:
         strokes, meta = plan_line(img, W, H, args)
     meta["strokes"] = len(strokes)
     meta["vertices"] = sum(len(s) for s in strokes)
-    if args.max_strokes and len(strokes) > args.max_strokes:
+    if args.max_strokes and len(strokes) > args.max_strokes and not meta.get("tiers"):
         strokes = sorted(strokes, key=len, reverse=True)[: args.max_strokes]
         meta["truncated_to"] = args.max_strokes
         meta["strokes"] = len(strokes)
@@ -897,7 +951,11 @@ def main(argv=None) -> int:
     ap.add_argument("--from-plan", default=None,
                     help="文字计划：plan JSON，或每行 'x,y x,y ...' 的文本（也认 # 注释、canvas:x1,y1,x2,y2）")
     ap.add_argument("--mode", default="line",
-                    choices=["line", "sketch", "grid", "engrave"])
+                    choices=["line", "sketch", "grid", "engrave", "dots"])
+    ap.add_argument("--pitch", type=float, default=12.0, help="dots 的网点间距 px")
+    ap.add_argument("--dot-levels", type=int, default=4, help="dots 的明暗级数")
+    ap.add_argument("--dot-min", type=float, default=2.0, help="dots 最浅一级的笔径 px")
+    ap.add_argument("--dot-max", type=float, default=0.0, help="dots 最深一级的笔径 px（0=0.92*pitch）")
     ap.add_argument("--canvas", default=None, help="'x1,y1,x2,y2' 或 '宽x高'；不给就检测画图窗口")
     ap.add_argument("--margin", type=int, default=24, help="画布内边距 px")
     ap.add_argument("--thresh", type=float, default=150, help="line/grid 阈值（暗=墨）")
@@ -1029,8 +1087,11 @@ def main(argv=None) -> int:
         strokes_win = [[[p[0] + box[0], p[1] + box[1]] for p in s] for s in strokes]
 
     # 预览 + 计划落盘（预览线宽 = 实际落笔粗细，免得预览比真画细一大截）
-    prev_w = int(a.brush_size) if getattr(a, "brush_size", 0) > 0 else a.preview_width
-    prev = render_preview(strokes_canvas, canvas[0], canvas[1], prev_w)
+    if meta.get("tiers"):
+        prev = render_preview_dots(strokes_canvas, meta, canvas[0], canvas[1])
+    else:
+        prev_w = int(a.brush_size) if getattr(a, "brush_size", 0) > 0 else a.preview_width
+        prev = render_preview(strokes_canvas, canvas[0], canvas[1], prev_w)
     prev_path = base + "-preview.png"
     prev.save(prev_path, "PNG")
     similarity = None
@@ -1084,15 +1145,36 @@ def main(argv=None) -> int:
             clear_canvas()
             time.sleep(0.35)
         # 清空会把工具切到「选择」，所以设笔形/粗细必须放在清空之后
-        if getattr(a, "brush_size", 1) > 1:
+        if getattr(a, "brush_size", 1) > 1 and not meta.get("tiers"):
             summary["brush"] = set_paint_brush(int(a.brush_size), a.brush_kind)
             time.sleep(0.2)
     log: list = []
     table = _gain_table()
-    with Brain(transport=a.transport) as b:
-        b.release()
-        res = run_strokes(b, strokes_win, a, table, paint_hwnd, log)
-        b.release()
+    if meta.get("tiers"):
+        # 网点：按明暗级分组，每组换一次笔径，然后一组点点点
+        total = {"strokes_done": 0, "interruptions": 0, "aborted": False, "ms": 0}
+        summary["brush"] = []
+        with Brain(transport=a.transport) as b:
+            b.release()
+            for (s0, s1), size in zip(meta["tiers"], meta["tier_sizes"]):
+                if s1 <= s0:
+                    continue
+                summary["brush"].append(set_paint_brush(int(round(size)), a.brush_kind))
+                r = run_strokes(b, strokes_win[s0:s1], a, table, paint_hwnd, log)
+                total["strokes_done"] += r.get("strokes_done", 0)
+                total["interruptions"] += r.get("interruptions", 0)
+                total["ms"] += r.get("ms", 0)
+                if r.get("aborted"):
+                    total["aborted"] = True
+                    total["reason"] = r.get("reason")
+                    break
+            b.release()
+        res = total
+    else:
+        with Brain(transport=a.transport) as b:
+            b.release()
+            res = run_strokes(b, strokes_win, a, table, paint_hwnd, log)
+            b.release()
     summary["run"] = res
     summary["events"] = log[:20]
 

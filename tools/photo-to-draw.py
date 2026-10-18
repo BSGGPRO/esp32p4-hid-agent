@@ -37,6 +37,10 @@ INBOX = os.path.join(_WORKSPACE, "inbox")
 DRAW = os.path.join(_HERE, "draw-image.py")
 
 PRESETS = {
+    # 网点（点彩）：唯一能"看起来像照片"的画法，每个点一次落笔，成本低
+    "dots": {"engine": "dots", "pitch": 12, "dot_levels": 4, "dot_min": 3},
+    "dots9": {"engine": "dots", "pitch": 9, "dot_levels": 4, "dot_min": 2.5},
+
     # 线稿：Informative Drawings 出轮廓，再一笔笔描（用户认可的那个效果，最快）
     "sketch": {"engine": "id", "id_model": "anime", "thresh": 200,
                "simplify": 1.2, "min_len": 4, "brush": 2, "step": 2.5, "smooth": 3,
@@ -97,7 +101,15 @@ def main(argv=None) -> int:
 
     src = a.photo
     extra = {}
-    if pres.get("engine") == "id":
+    if pres.get("engine") == "dots":
+        cmd = [sys.executable, DRAW, a.photo, "--mode", "dots",
+               "--pitch", str(pres["pitch"]),
+               "--dot-levels", str(pres["dot_levels"]),
+               "--dot-min", str(pres["dot_min"]),
+               "--out", base, "--transport", a.transport,
+               "--brush-size", str(a.brush_size or 1), "--brush-kind", a.brush_kind]
+    elif pres.get("engine") == "id":
+
         # 先过 Informative Drawings 出线稿（人看得懂的轮廓），再描线
         art = base + "-lineart.png"
         step = [sys.executable, os.path.join(_HERE, "lineart.py"), a.photo,

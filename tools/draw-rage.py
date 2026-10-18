@@ -135,6 +135,24 @@ def focus_hwnd(hwnd: int) -> bool:
         u32.keybd_event(0x12, 0, 2, 0)
         ok = u32.SetForegroundWindow(int(hwnd))
     time.sleep(0.35)
+    if foreground() == int(hwnd):
+        return True
+    # 还不行（用户正在别的窗口里打字，Windows 死锁前台）：AttachThreadInput 硬切
+    try:
+        k32 = ctypes.windll.kernel32
+        fg = int(u32.GetForegroundWindow())
+        tid_fg = u32.GetWindowThreadProcessId(fg, None)
+        tid_me = k32.GetCurrentThreadId()
+        if tid_fg and tid_fg != tid_me:
+            u32.AttachThreadInput(tid_fg, tid_me, True)
+        u32.BringWindowToTop(int(hwnd))
+        u32.SetForegroundWindow(int(hwnd))
+        u32.SetFocus(int(hwnd))
+        if tid_fg and tid_fg != tid_me:
+            u32.AttachThreadInput(tid_fg, tid_me, False)
+        time.sleep(0.3)
+    except Exception:  # noqa: BLE001
+        pass
     return foreground() == int(hwnd)
 
 
