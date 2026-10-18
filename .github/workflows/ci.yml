@@ -19,8 +19,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 装依赖（只装截图需要的 Pillow）
-        run: python -m pip install --upgrade pip Pillow
+      - name: 装依赖（Pillow 截图；numpy 给亮块定位）
+        run: python -m pip install --upgrade pip Pillow numpy
 
       - name: 冒烟测试（语法 / 纯逻辑 / 文档与代码一致）
         run: python tests/smoke.py

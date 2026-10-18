@@ -13,8 +13,9 @@
 Pillow>=9.0
 
 # ---- 可选依赖（不装也能跑；装了才解锁对应操作）--------------------------------
-# OCR：connector 的 ocr / find / read_text，以及 --selfcheck 的「OCR 引擎」一项
+# OCR：connector 的 ocr / find / read_text / ui，以及 --selfcheck 的「OCR 引擎」一项
 #   python -m pip install rapidocr-onnxruntime
+#   会顺带装 numpy；ui 找按钮那步直接用 numpy（只装 Pillow 时 ui 用不了，其余操作不受影响）
 #
 # 本地视觉：connector 的 see（常驻服务 tools/visiond.py 用同一套依赖）
 #   约 5 GB 下载；需要 NVIDIA 显卡（4bit 量化后约占 2.5 GB 显存）

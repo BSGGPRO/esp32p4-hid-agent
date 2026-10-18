@@ -59,21 +59,31 @@ check("_yesno 不是", C._yesno("不是") is False)
 check("_yesno 判不了返回 None", C._yesno("可能吧") is None)
 
 # 5) 找块：一张牌子上画两个白方块，应该找到两块，且位置对得上
+#    （亮块定位要 numpy；只装 Pillow 的环境里跳过，装了就真测）
 from PIL import Image, ImageDraw  # noqa: E402
 
-im = Image.new("RGB", (400, 200), (20, 20, 20))
-d = ImageDraw.Draw(im)
-d.rectangle((40, 60, 80, 100), fill=(240, 240, 240))     # 中心 (60, 80)
-d.rectangle((300, 60, 340, 100), fill=(240, 240, 240))   # 中心 (320, 80)
-blocks = [b for b in C._blobs(im) if 10 <= b[2] <= 90 and 10 <= b[3] <= 90]
-check("找到两个块", len(blocks) == 2, str(blocks))
-if len(blocks) == 2:
-    blocks.sort()
-    cx = [b[0] + b[2] // 2 for b in blocks]
-    check("块位置对得上", abs(cx[0] - 60) <= 6 and abs(cx[1] - 320) <= 6, str(cx))
+try:
+    import numpy  # noqa: F401
+    has_numpy = True
+except ImportError:
+    has_numpy = False
 
-check("纯色图判为空白", C._blank(Image.new("RGB", (200, 120), (25, 25, 25))) is True)
-check("有内容不算空白", C._blank(im) is False)
+if not has_numpy:
+    print("SKIP  亮块定位（没装 numpy；ui 的按钮定位需要它，OCR 那套装了就有）")
+else:
+    im = Image.new("RGB", (400, 200), (20, 20, 20))
+    d = ImageDraw.Draw(im)
+    d.rectangle((40, 60, 80, 100), fill=(240, 240, 240))     # 中心 (60, 80)
+    d.rectangle((300, 60, 340, 100), fill=(240, 240, 240))   # 中心 (320, 80)
+    blocks = [b for b in C._blobs(im) if 10 <= b[2] <= 90 and 10 <= b[3] <= 90]
+    check("找到两个块", len(blocks) == 2, str(blocks))
+    if len(blocks) == 2:
+        blocks.sort()
+        cx = [b[0] + b[2] // 2 for b in blocks]
+        check("块位置对得上", abs(cx[0] - 60) <= 6 and abs(cx[1] - 320) <= 6, str(cx))
+
+    check("纯色图判为空白", C._blank(Image.new("RGB", (200, 120), (25, 25, 25))) is True)
+    check("有内容不算空白", C._blank(im) is False)
 
 # 6) 文档里的操作数要对得上代码（防止 README 和实现各说各话）
 #    用 AST 数 run_job 里认的操作：既认 op == "x"，也认 op in ("x", "y") 这种元组匹配。
