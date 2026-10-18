@@ -80,18 +80,32 @@ Every operation accepts `require`; when it does not match, the job stops.
 The vision model (Qwen2.5-VL-3B, 4-bit, ~2.5 GB VRAM) runs in a **resident service**:
 the model loads once, and every question afterwards just ships a small crop.
 
-Cold start costs 22 s once; steady state, measured:
+Cold start costs ~25 s once (both engines load in parallel); steady state, measured on this
+machine while idle:
 
-| Max image side | One question |
+| Action | Time |
 |---|---|
-| `longest=480` | **0.72 s** |
-| `longest=640` | 1.8 s |
-| `longest=1280` (default) | 3–4 s |
+| `ocr` small crop (~5 lines) | **0.12 s** (in-service) / 0.62 s including process start |
+| `ocr` wide crop (~34 lines) | 1.4 s |
+| `see` `speed=fast` (side 480) | 1.2 s |
+| `see` default (side 640) | 1.7 s |
+| `see` `speed=fine` (side 1280) | 3–4 s |
+| `--selfcheck` (5 checks) | **1.1 s** |
+
+> With the machine busy these roughly double. The relative comparison still holds.
 
 ```bash
-python tools/visiond.py --start     # optional: the first `see` starts it automatically
-python tools/visiond.py --status    # is it up, how much VRAM
+python tools/visiond.py --start     # optional: the first `see`/`ocr` starts it automatically
+python tools/visiond.py --status    # up? OCR and vision ready? how much VRAM
 ```
+
+Two traps found by measuring, both documented in the code comments:
+
+- **RapidOCR defaults to "scale the short side to 736"**: a 208×50 crop gets upscaled 15× before
+  detection (625 ms measured). Switching to "cap the long side at 1280" (`det_limit_type=max`)
+  makes the same crop **64 ms** with identical text.
+- **onnxruntime grabs every core by default**: on this 16-core box that is 30% *slower* than 8
+  threads, so the engine gets `cpu_count() // 2`.
 
 **Do not ask the model what OCR can answer.** Text, button labels and coordinates go through
 `ocr` / `find` — milliseconds, and they do not guess. `see` is for fuzzy questions like
@@ -146,8 +160,9 @@ anything not in the table is left as-is, so a missing entry never breaks the pag
 | End to end | ✅ passes | screenshot → move → screenshot → diff, `E2E OK` |
 | Performance | ✅ | ping 18.4 ms, mouse_move 12.5 ms, 332 messages/s burst |
 | Pointer accuracy | ✅ 1 px | four-corner calibration, worst error 1 px |
-| Self-check | ✅ 5/5 | `--selfcheck`: screen 2560×1440 / OCR / board / pointer / vision |
-| Vision latency | ✅ 0.72 s | resident service, `longest=480`; cold start 22 s paid once |
+| Self-check | ✅ 1.1 s, 5/5 | `--selfcheck`: screen 2560×1440 / OCR / board / pointer / vision |
+| Vision latency | ✅ 1.2 s / 1.7 s | `speed=fast` / default; the ~25 s cold start is paid once |
+| OCR latency | ✅ 0.12 s | small crop, OCR engine resident (was 2.7 s per job) |
 | Dashboard i18n | ✅ tested | switched to English, still English after reload; `?lang=zh` switches back |
 
 ---

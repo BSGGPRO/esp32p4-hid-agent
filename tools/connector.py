@@ -21,14 +21,15 @@
     key       combo=<ctrl+t>              按组合键
     type      text=<...>                  敲字（只支持能直接映射的键）
     click     x= y=  [button=left|right]  点坐标；或 on=<变量名> 点某个 find 结果
-    move      x= y=                       移动光标
+    move      x= y=  或 on=<变量名>        移动光标
+    point     x= y=  或 on=<变量名>        闭环定位：自己纠偏到目标（比 move 准）
     scroll    amount=<n>                  滚轮
     wait      ms=<n>                      等
-    ocr       rect=[x0,y0,x1,y1]          逐行文字+坐标（RapidOCR，秒级）
+    ocr       rect=[x0,y0,x1,y1]          逐行文字+坐标（常驻 RapidOCR，小框约 120 ms）
     find      text=<...> [rect=..] [thresh=0.7] [as=名字]
                                           在区域里找一行字，存成变量（含中心点）
-    see       q=<问题> [rect=..] [longest=640] [max_new_tokens=32]
-                                          问一句"这是什么"。小图短答约 1 秒，越大越慢
+    see       q=<问题> [rect=..] [speed=fast|normal|fine] [longest=N] [max_new_tokens=32]
+                                          speed: fast=长边480 / normal=640(默认) / fine=1280
     vision    [action=status|start|stop]   常驻视觉服务的状态（首次 see 会自动拉起）
 
     recipe    name=wechat-send  to=<聊天> pieces=[py:拼音, raw:ascii]
@@ -36,7 +37,7 @@
     recipe    name=open-url  url=<网址> [expect=标题关键字] [new_tab=true]
               开浏览器到某网址（开着就 Ctrl+T 新标签，没开就 Win+R 交给系统，最后核对标题）
 
-变量（as=）之后可以用 on=<名字>（点击）。
+变量（as=）之后可以用 on=<名字>（click / move / point 都认）。
 
 自检：`python tools/connector.py --selfcheck` 一次报出屏幕/OCR/板子/指针/视觉五项状态。
 
@@ -135,36 +136,104 @@ def restore(w: dict) -> None:
 
 
 # --------------------------------------------------------------------- 眼睛
-def ocr(rect) -> list:
-    """RapidOCR：一次拿回所有行的文字和屏幕坐标。"""
+# 一次作业里 3 个动作经常都要看屏幕（find→click→核对）。截一张 2560×1440 要 150 ms，
+# 所以同一张画面反复用，直到有输入动作或 wait 说明屏幕可能变了才重截。
+_cap = {"im": None, "t": 0.0}
+CAP_MAX_AGE = 5.0          # 秒；超龄就当过期，宁可多截一次也不用旧画面骗自己
+_CACHE_KILL = {"key", "type", "click", "move", "scroll", "drag", "drag_path",
+               "hold", "point", "wait_change", "wait", "restore", "focus",
+               "recipe", "clip"}
+
+
+def _invalidate() -> None:
+    _cap["im"] = None
+
+
+def _tmp(name: str) -> str:
+    """每进程一个临时文件名：两个连接器同时跑时不能抢同一个文件（会把对方的图读坏）。"""
+    return os.path.join(TMP, "_conn_%d_%s.png" % (os.getpid(), name))
+
+
+def _screen():
+    """整屏画面（带缓存）。"""
+    now = time.time()
+    if _cap["im"] is not None and now - _cap["t"] <= CAP_MAX_AGE:
+        return _cap["im"]
+    from PIL import Image
+
+    path = eyes.capture(_tmp("full")).path
+    im = Image.open(path).convert("RGB")
+    _cap["im"], _cap["t"] = im, now
+    return im
+
+
+def _ocr_daemon(im):
+    """把裁剪图发给常驻服务做 OCR；服务不在就返回 None（调用方退回落本地引擎）。"""
+    import base64
+    import io
+    import urllib.request
+
+    try:
+        import visiond
+
+        h = visiond._ping()
+        if not h:
+            visiond.start()
+        elif not h.get("ocr"):
+            time.sleep(0.2)                  # OCR 引擎还在加载，等一下再试
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        body = json.dumps({"png_b64": base64.b64encode(buf.getvalue()).decode()}).encode()
+        req = urllib.request.Request("http://127.0.0.1:%d/ocr" % visiond.PORT, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            out = json.loads(r.read().decode())
+        if out.get("err") or "rows" not in out:
+            return None
+        _last["ocr_ms"] = out.get("ms")
+        return out["rows"]
+    except Exception:  # noqa: BLE001 — 服务只是加速手段，不该成为失败点
+        return None
+
+
+def _ocr_local(im) -> list:
     global _ocr_engine
     if _ocr_engine is None:
         from rapidocr_onnxruntime import RapidOCR
+        # 和 visiond 同一套参数：短边放大是 OCR 卡顿的主因（见 visiond._load_ocr）
+        _ocr_engine = RapidOCR(det_limit_type="max", det_limit_side_len=1280,
+                               intra_op_num_threads=max(2, (os.cpu_count() or 4) // 2))
+    import numpy as np
 
-        _ocr_engine = RapidOCR()
-    from PIL import Image
-
-    path = eyes.capture(os.path.join(TMP, "_conn_full.png")).path
-    x0, y0, x1, y1 = rect
-    q = os.path.join(TMP, "_conn_crop.png")
-    Image.open(path).convert("RGB").crop((x0, y0, x1, y1)).save(q)
-    res, _ = _ocr_engine(q)
-    out = []
+    res, _ = _ocr_engine(np.array(im))
+    rows = []
     for box, text, score in (res or []):
         xs = [p[0] for p in box]
         ys = [p[1] for p in box]
-        out.append({"text": text, "score": float(score),
-                    "x": min(xs) + x0, "y": min(ys) + y0,
-                    "w": max(xs) - min(xs), "h": max(ys) - min(ys)})
-    return out
+        rows.append({"text": text, "score": float(score),
+                     "x": float(min(xs)), "y": float(min(ys)),
+                     "w": float(max(xs) - min(xs)), "h": float(max(ys) - min(ys))})
+    return rows
 
 
-def _shot(rect=None, longest: int = 1280):
+def ocr(rect) -> list:
+    """RapidOCR：一次拿回所有行的文字和屏幕坐标（坐标已经换算回整屏）。"""
+    x0, y0, x1, y1 = [int(v) for v in rect]
+    im = _screen().crop((x0, y0, x1, y1))
+    rows = _ocr_daemon(im)
+    if rows is None:
+        rows = _ocr_local(im)
+    for r in rows:
+        r["x"] += x0
+        r["y"] += y0
+    return rows
+
+
+def _shot(rect=None, longest: int = 640):
     """截屏 + 裁剪 + 缩小。整屏直接喂模型又慢又容易编，先裁到关心的那块。"""
     from PIL import Image
 
-    path = eyes.capture(os.path.join(TMP, "_conn_see.png")).path
-    im = Image.open(path).convert("RGB")
+    im = _screen()
     if rect:
         im = im.crop(tuple(int(v) for v in rect))
     if max(im.size) > longest:
@@ -173,8 +242,11 @@ def _shot(rect=None, longest: int = 1280):
     return im
 
 
-def see(question: str, rect=None, longest: int = 1280, max_new_tokens: int = 200) -> str:
-    """问一句"这是什么"。优先走常驻视觉服务（模型只加载一次，1~2 秒）；服务不在就退回落本地加载。"""
+def see(question: str, rect=None, longest: int = 0, max_new_tokens: int = 200,
+        speed: str = "normal") -> str:
+    """问一句"这是什么"。默认 640 长边（1.8 秒）；speed=fast 用 480（0.7 秒），fine 用 1280。"""
+    if not longest:
+        longest = {"fast": 480, "normal": 640, "fine": 1280}.get(speed, 640)
     im = _shot(rect, longest)
     ans = _see_daemon(im, question, max_new_tokens)
     if ans is not None:
@@ -376,6 +448,18 @@ RECIPES = {"wechat-send": recipe_wechat_send, "open-url": recipe_open_url}
 
 
 # --------------------------------------------------------------------- 执行
+def _point_of(st: dict, vars: dict):
+    """要动到哪儿：on=<find 存的框> 优先，否则 x/y。click / move / point 共用一套规则。"""
+    if "on" in st:
+        box = vars.get(st["on"])
+        if not box:
+            raise RuntimeError("变量 %r 不存在（先 find ... as=%r）" % (st["on"], st["on"]))
+        return int(box["cx"]), int(box["cy"])
+    if "x" in st and "y" in st:
+        return int(st["x"]), int(st["y"])
+    raise RuntimeError("%s 需要 x,y 或 on=<find 的变量>" % st.get("op"))
+
+
 def run_job(job: dict | list, transport: str = "tcp") -> dict:
     steps = job.get("steps") if isinstance(job, dict) else job
     steps = steps or []
@@ -415,18 +499,11 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                     elif op == "type":
                         brain.type_text(st["text"])
                     elif op == "move":
-                        brain.move(int(st["x"]), int(st["y"]))
+                        brain.move(*_point_of(st, vars))
                     elif op == "scroll":
                         brain.scroll(int(st.get("amount", -3)))
                     elif op == "click":
-                        if "on" in st:
-                            box = vars.get(st["on"])
-                            if not box:
-                                raise RuntimeError("变量 %r 不存在" % st["on"])
-                            pt = (int(box["cx"]), int(box["cy"]))
-                        else:
-                            pt = (int(st["x"]), int(st["y"]))
-                        brain.click(pt, button=st.get("button", "left"))
+                        brain.click(_point_of(st, vars), button=st.get("button", "left"))
                     elif op == "drag":
                         brain.drag(int(st["x1"]), int(st["y1"]), int(st["x2"]), int(st["y2"]),
                                    button=st.get("button", "left"))
@@ -436,8 +513,8 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                     elif op == "hold":
                         brain.hold(st["keys"])
                     elif op == "point":      # 闭环定位：比 move 准（自己纠偏到目标）
-                        rec["result"] = brain.point(int(st["x"]), int(st["y"]),
-                                                    tol=int(st.get("tol", 2)))
+                        px, py = _point_of(st, vars)
+                        rec["result"] = brain.point(px, py, tol=int(st.get("tol", 2)))
                     elif op == "look":
                         rec["result"] = brain.look(st.get("path"), st.get("region"))
                     elif op == "read_text":
@@ -446,6 +523,8 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                             restore_clip=bool(st.get("restore_clip", True)))
                         rec["text"] = (rec["result"] or {}).get("text")
                     elif op == "diff":
+                        if "a" not in st or "b" not in st:
+                            raise RuntimeError("diff 需要 a 和 b 两个变量（先 look 截两张，把 as= 存的变量名传进来）")
                         rec["result"] = brain.diff(st["a"], st["b"], int(st.get("threshold", 0)))
                     else:                    # wait_change：等画面变化，等不到就报错
                         rec["result"] = brain.wait_change(
@@ -501,8 +580,9 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                     rec["score"] = round(best, 3)
 
                 elif op == "see":
-                    ans = see(st["q"], st.get("rect"), int(st.get("longest", 1280)),
-                              int(st.get("max_new_tokens", 200)))
+                    ans = see(st["q"], st.get("rect"), int(st.get("longest", 0)),
+                              int(st.get("max_new_tokens", 200)),
+                              str(st.get("speed", "normal")))
                     rec["answer"] = ans
                     if _last.get("vision_ms") is not None:
                         rec["ms"] = _last["vision_ms"]
@@ -536,6 +616,10 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                 else:
                     raise RuntimeError("不认识的操作 %r" % op)
 
+                if op in _CACHE_KILL:      # 屏幕多半变了，下次看屏幕重新截
+                    _invalidate()
+                if _last.get("ocr_ms") is not None and op in ("ocr", "find"):
+                    rec["ms"] = _last["ocr_ms"]
                 if "require" in st:
                     blob = json.dumps(rec, ensure_ascii=False)
                     if clean(st["require"]) not in clean(blob):
@@ -555,8 +639,8 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
                 brain.release()
             except Exception:  # noqa: BLE001
                 pass
-        for name in ("_conn_full.png", "_conn_crop.png", "_conn_see.png"):
-            p = os.path.join(TMP, name)
+        for name in ("full", "crop", "see"):
+            p = _tmp(name)
             if os.path.exists(p):
                 try:
                     os.remove(p)
@@ -580,7 +664,7 @@ def selfcheck(transport: str = "tcp") -> dict:
 
     def screen():
         w, h = screen_size()
-        p = eyes.capture(os.path.join(TMP, "_conn_full.png")).path
+        p = eyes.capture(_tmp("full")).path
         from PIL import Image
 
         im = Image.open(p)
@@ -625,6 +709,15 @@ def selfcheck(transport: str = "tcp") -> dict:
     return {"ok": not hard_fail, "checks": checks}
 
 
+_READ_ONLY = {"look", "ocr", "find", "read_text", "diff", "title", "see",
+              "vision", "wait", "wait_change", "clip"}
+
+
+def _is_disconnect(err: str) -> bool:
+    e = (err or "").lower()
+    return "portdisconnected" in e or "10053" in e or "10054" in e
+
+
 def main() -> int:
     if "--selfcheck" in sys.argv:
         out = selfcheck(os.environ.get("CONNECTOR_TRANSPORT", "tcp"))
@@ -635,7 +728,18 @@ def main() -> int:
         print(json.dumps({"ok": False, "err": "stdin 里没有作业 JSON"}, ensure_ascii=False))
         return 2
     job = json.loads(raw)
-    out = run_job(job, transport=os.environ.get("CONNECTOR_TRANSPORT", "tcp"))
+    transport = os.environ.get("CONNECTOR_TRANSPORT", "tcp")
+    out = run_job(job, transport=transport)
+    # 串口/TCP 会话被对面掐掉（10053）时：只读作业重试一次是安全的；
+    # 有输入动作的作业绝不重试——宁可报错，也不赌第二次点击。
+    steps = (job.get("steps") if isinstance(job, dict) else job) or []
+    if not out.get("ok") and _is_disconnect(out.get("err", "")):
+        if all((s or {}).get("op") in _READ_ONLY for s in steps):
+            time.sleep(0.6)
+            out = run_job(job, transport=transport)
+            out["retried"] = True
+        else:
+            out["err"] += "（板子连接断了，这一步没执行；重跑整条命令即可）"
     print(json.dumps(out, ensure_ascii=False))
     return 0 if out.get("ok") else 1
 

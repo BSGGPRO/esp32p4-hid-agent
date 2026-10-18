@@ -9,8 +9,12 @@
     python tools/visiond.py --serve     # 前台跑（调试用）
 
 HTTP（只监听 127.0.0.1）：
-    GET  /health            -> {"ready":bool,"model":...,"vram_mb":n}
+    GET  /health            -> {"ready":bool,"ocr":bool,"model":...,"vram_mb":n}
     POST /see   {"png_b64":..., "q":"问题", "mt":32} -> {"a":"答案","ms":n}
+    POST /ocr   {"png_b64":...}                      -> {"rows":[...],"ms":n}
+
+OCR 也常驻在这里（RapidOCR 只初始化一次）：一次 OCR 从每次 2.7 秒降到一两百毫秒。
+两个引擎各用一把锁，OCR 走 CPU、VLM 走显卡，互不排队。
 
 没有密钥校验：它只绑定回环地址，不上网。别把它暴露到 0.0.0.0。
 """
@@ -33,8 +37,9 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
 PORT = int(os.environ.get("DSV_PORT", "8771"))
 HOST = "127.0.0.1"
-_lock = threading.Lock()
-_state = {"ready": False, "model": None, "proc": None, "vram_mb": 0}
+_lock = threading.Lock()          # 显卡：一次只让一个推理进去
+_ocr_lock = threading.Lock()      # CPU：OCR 独立排队
+_state = {"ready": False, "model": None, "vram_mb": 0, "ocr": None, "ocr_ready": False}
 
 
 def _load():
@@ -49,6 +54,83 @@ def _load():
     _state["model"] = (m, AutoProcessor.from_pretrained(MODEL_ID))
     _state["vram_mb"] = int(torch.cuda.memory_allocated() / 1048576)
     _state["ready"] = True
+    # 先跑一次空的：把 CUDA 上下文、cuBLAS 句柄这些一次性开销在启动时付掉，
+    # 否则第一句真问题会多等一两秒。
+    try:
+        im = _tiny_png()
+        _answer(im, "what", 2)
+    except Exception:                       # noqa: BLE001 — 预热失败不影响正确性
+        pass
+
+
+def _tiny_png() -> bytes:
+    import io as _io
+
+    from PIL import Image
+
+    buf = _io.BytesIO()
+    Image.new("RGB", (64, 64), (255, 255, 255)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _ocr_threads() -> int:
+    """onnxruntime 默认吃满所有核，小图上反而更慢：本机 16 核实测比 8 核慢 30%。"""
+    return max(2, (os.cpu_count() or 4) // 2)
+
+
+def _load_ocr() -> None:
+    """OCR 引擎也常驻。它只吃 CPU，和显卡那套互不干扰。
+
+    det_limit_type="max" 是这里的关键：RapidOCR 默认按"短边缩到 736"，
+    一块 208×50 的小图会被放大 15 倍再检测——实测 625 ms，改完 64 ms，
+    同一张图文字一个字没变。大图按长边压到 1280。
+    """
+    from rapidocr_onnxruntime import RapidOCR
+
+    eng = RapidOCR(det_limit_type="max", det_limit_side_len=1280,
+                   intra_op_num_threads=_ocr_threads())
+    try:                                    # 用带字的图预热，把两种模型形状的开销先付掉
+        import numpy as np
+
+        eng(_warm_image())
+    except Exception:                       # noqa: BLE001
+        pass
+    _state["ocr"] = eng
+    _state["ocr_ready"] = True
+
+
+def _warm_image():
+    """一张 1280×480、三十来行字的白图：让检测/识别两个模型都把图算一遍。"""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    im = Image.new("RGB", (1280, 480), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    line = "The quick brown fox jumps over the lazy dog 0123456789 中文测试"
+    for i in range(30):
+        d.text((8, 4 + i * 15), line[: 20 + (i % 30)], fill=(20, 20, 20))
+    return np.array(im)
+
+
+def _ocr_rows(png: bytes) -> list:
+    import numpy as np
+    from PIL import Image
+
+    if _state["ocr"] is None and not _state["ocr_ready"]:
+        with _ocr_lock:
+            if _state["ocr"] is None:
+                _load_ocr()
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    with _ocr_lock:
+        res, _ = _state["ocr"](np.array(im))
+    rows = []
+    for box, text, score in (res or []):
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        rows.append({"text": text, "score": float(score),
+                     "x": float(min(xs)), "y": float(min(ys)),
+                     "w": float(max(xs) - min(xs)), "h": float(max(ys) - min(ys))})
+    return rows
 
 
 def _answer(png: bytes, question: str, mt: int) -> str:
@@ -81,13 +163,15 @@ def _serve() -> None:
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path.startswith("/health"):
-                self._send(200, {"ready": _state["ready"], "model": MODEL_ID,
-                                 "vram_mb": _state["vram_mb"], "pid": os.getpid()})
+                self._send(200, {"ready": _state["ready"], "ocr": _state["ocr_ready"],
+                                 "model": MODEL_ID, "vram_mb": _state["vram_mb"],
+                                 "pid": os.getpid()})
             else:
                 self._send(404, {"err": "unknown"})
 
         def do_POST(self) -> None:  # noqa: N802
-            if not self.path.startswith("/see"):
+            path = self.path.split("?", 1)[0]
+            if path not in ("/see", "/ocr"):
                 self._send(404, {"err": "unknown"})
                 return
             try:
@@ -95,6 +179,10 @@ def _serve() -> None:
                 req = json.loads(self.rfile.read(n) or b"{}")
                 png = base64.b64decode(req["png_b64"])
                 t0 = time.time()
+                if path == "/ocr":
+                    rows = _ocr_rows(png)
+                    self._send(200, {"rows": rows, "ms": int((time.time() - t0) * 1000)})
+                    return
                 with _lock:                      # 单卡，串行；并发请求排队而不是抢显存
                     if not _state["ready"]:
                         self._send(503, {"err": "loading"})
@@ -109,6 +197,7 @@ def _serve() -> None:
 
     srv = ThreadingHTTPServer((HOST, PORT), H)
     threading.Thread(target=_load, daemon=True).start()
+    threading.Thread(target=_load_ocr, daemon=True).start()   # 两个引擎并行加载
     srv.serve_forever()
 
 
