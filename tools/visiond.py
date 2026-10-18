@@ -297,7 +297,8 @@ def _serve() -> None:
             pass
 
     srv = ThreadingHTTPServer((HOST, PORT), H)
-    threading.Thread(target=_load, daemon=True).start()
+    if not _game_mode():          # 全屏（在打游戏）别抢显存，第一次真要问图时再装
+        threading.Thread(target=_load, daemon=True).start()
     threading.Thread(target=_load_ocr, daemon=True).start()   # 两个引擎并行加载
     threading.Thread(target=_idle_watch, daemon=True).start()  # 空转就把显存还回去
     srv.serve_forever()
@@ -360,7 +361,9 @@ def start(wait_s: int = 120) -> dict:
     import subprocess
     flags = 0
     if os.name == "nt":
-        flags = 0x00000008 | 0x00000200      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        # CREATE_NO_WINDOW 而不是 DETACHED_PROCESS：后者会为这个控制台程序**新开一个
+        # 可见的控制台窗口**，用户每次自动拉起服务都会看到一个 CMD 弹窗。
+        flags = 0x08000000 | 0x00000200      # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     subprocess.Popen([sys.executable, os.path.abspath(__file__), "--serve"],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      stdin=subprocess.DEVNULL, creationflags=flags,
