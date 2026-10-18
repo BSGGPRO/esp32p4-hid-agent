@@ -2,6 +2,8 @@
 
 [中文](README.md) | **English**
 
+[![ci](https://github.com/BSGGPRO/esp32p4-hid-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/BSGGPRO/esp32p4-hid-agent/actions/workflows/ci.yml)
+
 Turn an **ESP32-P4 dev board** into a **standard USB keyboard + mouse** for a Windows machine,
 then drive it with a **JSON connector**: screenshot → decide → move the mouse / type → screenshot again to verify.
 Hardware-level input, no driver, no software injection.

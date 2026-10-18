@@ -2,6 +2,8 @@
 
 **中文** | [English](README.en.md)
 
+[![ci](https://github.com/BSGGPRO/esp32p4-hid-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/BSGGPRO/esp32p4-hid-agent/actions/workflows/ci.yml)
+
 把一块 **ESP32-P4 开发板**变成这台 Windows 上的**标准 USB 键鼠**，再用一个 **JSON 连接器**把它用起来：
 截屏 → 判断 → 动鼠标 / 敲键盘 → 再截屏核对。硬件输入、零驱动、不碰任何软件注入。
 
