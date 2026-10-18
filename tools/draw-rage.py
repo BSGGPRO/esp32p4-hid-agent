@@ -138,6 +138,12 @@ def focus_hwnd(hwnd: int) -> bool:
     return foreground() == int(hwnd)
 
 
+def set_rect(hwnd: int, x: int, y: int, w: int, h: int, activate: bool = False) -> bool:
+    """把窗口挪到 (x,y) 并改成 w x h。只在「画图是我们自己打开的时候」用。"""
+    flags = SWP_NOZORDER | (0 if activate else SWP_NOACTIVATE)
+    return bool(u32.SetWindowPos(int(hwnd), 0, int(x), int(y), int(w), int(h), flags))
+
+
 def minimal_move_off_chat(paint: dict, chat: dict | None, max_ratio: float = 0.25,
                           dry_run: bool = False) -> dict:
     """画图窗口与聊天窗口重叠太多时，做**等尺寸最小移动**（不缩放！）。

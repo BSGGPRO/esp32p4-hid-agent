@@ -57,10 +57,16 @@ class App:
                                     values=[QUALITY_TEXT[k] for k in ("quick", "good", "hd")])
         self.quality.current(1)
         self.quality.pack(side="left", padx=6)
-        self.canvas_mode = ttk.Combobox(mid, state="readonly", width=26,
-                                        values=["画布：自动（画图窗口）", "画布：预览 900x900"])
+        self.canvas_mode = ttk.Combobox(mid, state="readonly", width=30,
+                                        values=["画布 820x600（推荐，约 3-5 分钟）",
+                                                "画布 1040x760（更细，约 6-9 分钟）",
+                                                "画布 900x900（只预览，不动鼠标）"])
         self.canvas_mode.current(0)
         self.canvas_mode.pack(side="left", padx=6)
+        self.clear_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(mid, text="先清空画布", variable=self.clear_var, fg=fg, bg=bg,
+                       selectcolor=bg, activebackground=bg,
+                       activeforeground=fg).pack(side="left", padx=4)
 
         btns = tk.Frame(root, bg=bg)
         btns.pack(fill="x", **pad)
@@ -82,8 +88,8 @@ class App:
         self.log.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         self.log.configure(state="disabled")
 
-        tk.Label(root, text="提示：先打开「画图」，窗口别最大化；真画前有 5 秒倒计时，"
-                            "画的过程中按 ESC 立刻停笔，别抢鼠标。",
+        tk.Label(root, text="不用先开画图：点「开始画」会自动打开画图、清空画布再画；"
+                            "有 5 秒倒计时，画的过程中按 ESC 立刻停笔。",
                  fg="#8b93a7", bg=bg, font=("Microsoft YaHei UI", 9)).pack(anchor="w", padx=12, pady=(0, 10))
 
     # ---------- 工具 ----------
@@ -176,14 +182,24 @@ class App:
         self.run_cli(["--canvas", "0,0,900,900"])
 
     def draw(self) -> None:
+        idx = self.canvas_mode.current()
+        if idx == 2:                      # 只预览，不碰鼠标
+            self.say("选了「只预览」，走预览流程。")
+            self.preview()
+            return
+        canvas = "1040x760" if idx == 1 else "820x600"
         if not messagebox.askokcancel("开始真画？",
-                                      "接下来板子会真的控制鼠标在「画图」里画。\n\n"
-                                      "· 请先打开画图、窗口别最大化\n"
+                                      "接下来会自动打开「画图」、准备 %s 的白画布，"
+                                      "然后板子鼠标一笔一笔画。\n\n"
                                       "· 点确定后有 5 秒倒计时，按 ESC 取消\n"
                                       "· 画的过程中按 ESC 立刻停笔\n"
-                                      "· 别抢鼠标（抢了会抬笔跳过那一笔）\n\n继续？"):
+                                      "· 别抢鼠标（抢了会抬笔跳过那一笔）\n\n继续？" % canvas):
             return
-        self.run_cli(["--draw", "--progress", "50", "--stop-key", "esc"])
+        extra = ["--draw", "--progress", "50", "--stop-key", "esc",
+                 "--paint-canvas", canvas]
+        if not self.clear_var.get():
+            extra.append("--keep-canvas")
+        self.run_cli(extra)
 
     def open_preview(self) -> None:
         if self.last_preview and os.path.isfile(self.last_preview):

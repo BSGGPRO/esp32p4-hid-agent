@@ -536,13 +536,99 @@ def parse_canvas(spec: str) -> list[int]:
     return parts
 
 
-def detect_canvas_auto() -> tuple[list[int], int, str]:
+def clear_canvas() -> bool:
+    """把当前前台窗口（画图）里的内容清空：Ctrl+A -> Delete。"""
+    try:
+        u = ctypes.windll.user32
+        VK_CONTROL, VK_A, VK_DELETE, KEYUP = 0x11, 0x41, 0x2E, 0x0002
+        u.keybd_event(VK_CONTROL, 0, 0, 0)
+        u.keybd_event(VK_A, 0, 0, 0)
+        u.keybd_event(VK_A, 0, KEYUP, 0)
+        u.keybd_event(VK_CONTROL, 0, KEYUP, 0)
+        time.sleep(0.15)
+        u.keybd_event(VK_DELETE, 0, 0, 0)
+        u.keybd_event(VK_DELETE, 0, KEYUP, 0)
+        time.sleep(0.25)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _blank_png(w: int, h: int) -> str:
+    """准备一张 w x h 的白图：用它启动画图，画布尺寸就由它决定（画图没有尺寸参数）。"""
+    os.makedirs(INBOX, exist_ok=True)
+    path = os.path.join(INBOX, "blank-%dx%d.png" % (w, h))
+    if not (os.path.exists(path) and Image.open(path).size == (w, h)):
+        Image.new("RGB", (w, h), (255, 255, 255)).save(path)
+    return path
+
+
+def ensure_paint(args=None) -> dict | None:
+    """找画图窗口；没有就自己打开（可指定画布尺寸），并摆到屏幕右侧。
+
+    只在「画图是我们自己打开的时候」才动窗口，用户已经开着的窗口一概不碰。
+    """
+    import subprocess
+    paint = dr.find_paint() if dr is not None else None
+    if paint is not None:
+        return paint
+    if args is not None and getattr(args, "no_launch_paint", False):
+        return None
+    cw = ch = 0
+    try:
+        cw, ch = (int(v) for v in str(getattr(args, "paint_canvas", "1040x760") or "").lower().split("x"))
+    except Exception:  # noqa: BLE001
+        cw = ch = 0
+    args_list = ["cmd", "/c", "start", "", "mspaint"]
+    if cw >= 200 and ch >= 200:
+        args_list.append(_blank_png(cw, ch))
+    CREATE_NO_WINDOW = 0x08000000
+    try:
+        subprocess.Popen(args_list, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+    except Exception:  # noqa: BLE001
+        return None
+    for _ in range(80):                      # 最多等 20 秒
+        time.sleep(0.25)
+        paint = dr.find_paint()
+        if paint is not None:
+            break
+    if paint is None:
+        return None
+    time.sleep(1.6)                          # 等它把画布画出来
+    spec = str(getattr(args, "paint_size", "") or "")
+    try:
+        w, h = (int(v) for v in spec.lower().split("x"))
+    except Exception:  # noqa: BLE001
+        w = h = 0
+    if cw >= 200 and ch >= 200:              # 窗口 = 画布 + 工具栏/功能区余量
+        w, h = cw + 280, ch + 320
+    if w >= 400 and h >= 300:
+        sw = int(ctypes.windll.user32.GetSystemMetrics(0))
+        sh = int(ctypes.windll.user32.GetSystemMetrics(1))
+        w, h = min(w, sw - 40), min(h, sh - 80)
+        x, y = max(0, sw - w - 20), max(0, (sh - h) // 2)
+        try:
+            dr.set_rect(int(paint["hwnd"]), x, y, w, h)
+            time.sleep(0.9)
+            paint = dr.find_paint() or paint
+        except Exception:  # noqa: BLE001
+            pass
+    return paint
+
+
+def detect_canvas_auto(args=None) -> tuple[list[int], int, str]:
     if dr is None:
         raise SystemExit("检测画布需要 draw-rage.py: %r" % (_DR_ERR,))
     import eyes
-    paint = dr.find_paint()
+    paint = ensure_paint(args)
     if not paint:
-        raise SystemExit("没找到画图窗口（第 2 步：先打开 mspaint）")
+        raise SystemExit("没找到画图窗口（自动打开失败，请手动打开 mspaint）")
+    if args is not None and getattr(args, "clear_canvas", False):
+        dr.focus_hwnd(int(paint["hwnd"]))
+        clear_canvas()
+        time.sleep(0.35)
+        paint = dr.find_paint() or paint
     shot_path = os.path.join(INBOX, "canvas-%s.png" % time.strftime("%H%M%S"))
     os.makedirs(INBOX, exist_ok=True)
     shot = eyes.capture(shot_path)
@@ -652,6 +738,14 @@ def main(argv=None) -> int:
     ap.add_argument("--transport", default="tcp", choices=["tcp", "uart"])
     ap.add_argument("--out", default=None, help="预览/规划输出前缀")
     ap.add_argument("--no-window-move", action="store_true", help="兼容参数：永不移动窗口（本工具本来就不移）")
+    ap.add_argument("--no-launch-paint", action="store_true",
+                    help="找不到画图窗口时不要自动打开（默认会自动打开）")
+    ap.add_argument("--paint-size", default="",
+                    help="自动打开画图时的窗口大小，如 1400x1100（默认按画布尺寸自动算）")
+    ap.add_argument("--paint-canvas", default="1040x760",
+                    help="自动打开画图时用的白画布尺寸（画图没有尺寸参数，靠打开一张白图来定）")
+    ap.add_argument("--clear-canvas", action="store_true",
+                    help="开画前先清空画图里已有的内容（Ctrl+A / Delete）")
     a = ap.parse_args(argv)
 
     if not a.from_plan and not a.image:
@@ -692,7 +786,7 @@ def main(argv=None) -> int:
                 b = parse_canvas(a.canvas)
                 box = [b[0] + a.margin, b[1] + a.margin, b[2] - a.margin, b[3] - a.margin]
             elif a.draw:
-                det, paint_hwnd, before_shot = detect_canvas_auto()
+                det, paint_hwnd, before_shot = detect_canvas_auto(a)
                 box = [det[0] + a.margin, det[1] + a.margin, det[2] - a.margin, det[3] - a.margin]
             else:
                 box = [0, 0, 1000, 1000]
@@ -709,7 +803,7 @@ def main(argv=None) -> int:
             box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
             canvas = [box[2] - box[0], box[3] - box[1]]
         elif a.draw:
-            box, paint_hwnd, before_shot = detect_canvas_auto()
+            box, paint_hwnd, before_shot = detect_canvas_auto(a)
             box = [box[0] + a.margin, box[1] + a.margin, box[2] - a.margin, box[3] - a.margin]
             canvas = [box[2] - box[0], box[3] - box[1]]
         else:
@@ -775,11 +869,18 @@ def main(argv=None) -> int:
                 print(json.dumps({"ok": False, "err": "已取消（按了 ESC）"}, ensure_ascii=False))
                 return 5
     from brain import Brain
+    if not paint_hwnd and dr is not None:          # 指定了 --canvas 但画图还没开
+        paint = ensure_paint(a)
+        if paint:
+            paint_hwnd = int(paint["hwnd"])
     if dr is not None and paint_hwnd:
         if not dr.focus_hwnd(paint_hwnd):
             print(json.dumps({"ok": False, "err": "切不到画图窗口", "canvas_box": box},
                              ensure_ascii=False))
             return 4
+        if a.clear_canvas:
+            clear_canvas()
+            time.sleep(0.35)
     log: list = []
     table = _gain_table()
     with Brain(transport=a.transport) as b:

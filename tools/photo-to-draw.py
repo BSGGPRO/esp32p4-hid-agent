@@ -37,9 +37,9 @@ INBOX = os.path.join(_WORKSPACE, "inbox")
 DRAW = os.path.join(_HERE, "draw-image.py")
 
 PRESETS = {
-    "quick": {"levels": "95,150,205", "simplify": 2.2, "min_len": 10},
-    "good": {"levels": "90,125,160,195,225", "simplify": 1.8, "min_len": 8},
-    "hd": {"levels": "70,95,120,145,170,195,220", "simplify": 1.2, "min_len": 6},
+    "quick": {"levels": "95,145,200", "simplify": 2.4, "min_len": 10},
+    "good": {"levels": "90,125,160,200", "simplify": 2.2, "min_len": 8},
+    "hd": {"levels": "70,95,120,145,170,195,220", "simplify": 1.6, "min_len": 7},
 }
 
 
@@ -53,6 +53,12 @@ def main(argv=None) -> int:
     ap.add_argument("--transport", default="tcp", choices=["tcp", "uart"])
     ap.add_argument("--progress", type=int, default=0, help="每 N 笔打印进度")
     ap.add_argument("--max-strokes", type=int, default=0, help="最多多少笔（0=不限）")
+    ap.add_argument("--paint-canvas", default="1040x760",
+                    help="自动打开画图时用的白画布尺寸（决定能画多大、多像）")
+    ap.add_argument("--paint-size", default="",
+                    help="自动打开画图时的窗口大小（默认按画布自动算）")
+    ap.add_argument("--keep-canvas", action="store_true", help="不要清空画图里已有的内容")
+    ap.add_argument("--no-launch-paint", action="store_true", help="不要自动打开画图")
     a = ap.parse_args(argv)
 
     if not os.path.isfile(a.photo):
@@ -72,7 +78,13 @@ def main(argv=None) -> int:
     if a.max_strokes:
         cmd += ["--max-strokes", str(a.max_strokes)]
     if a.draw:
-        cmd += ["--draw"]
+        cmd += ["--draw", "--paint-canvas", a.paint_canvas]
+        if a.paint_size:
+            cmd += ["--paint-size", a.paint_size]
+        if not a.keep_canvas:
+            cmd += ["--clear-canvas"]
+        if a.no_launch_paint:
+            cmd += ["--no-launch-paint"]
         if a.progress:
             cmd += ["--progress", str(a.progress)]
 
