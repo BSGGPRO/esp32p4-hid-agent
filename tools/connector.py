@@ -39,8 +39,8 @@
 
     recipe    name=wechat-send  to=<聊天> pieces=[py:拼音, raw:ascii]
               微信发消息（标题核对 → 清空输入框 → 拼音选字/直接敲 → 发前核对 → 回车 → 发后核对）
-    recipe    name=open-url  url=<网址> [expect=标题关键字] [new_tab=true]
-              开浏览器到某网址（开着就 Ctrl+T 新标签，没开就 Win+R 交给系统，最后核对标题）
+    recipe    name=open-url  url=<网址> [expect=标题关键字]
+              交给系统打开（Win+R，不用地址栏，避免自动补全抢回车），最后核对标题
 
 按进程名找窗口：播放器这类程序标题就是当前内容（网易云的标题是歌名），
 按应用名找不到，用 exe=cloudmusic 这种进程名找。
@@ -748,46 +748,22 @@ def recipe_wechat_send(st: dict, transport: str, rec: dict) -> None:
 
 
 def recipe_open_url(st: dict, transport: str, rec: dict) -> None:
-    """把浏览器打开到某个网址：开着就新标签，没开就 Win+R 交给系统。"""
+    """把网址交给系统打开（Win+R），最后按窗口标题核对。
+
+    不走浏览器地址栏：那里有自动补全，回车可能选中的是一条历史记录/个人主页，
+    实测把「打开仓库页」变成了「打开 Your Repositories」。Win+R 里回车就是执行，
+    没有这层歧义；浏览器开着就在里面开新标签，没开就启动它。
+    """
     url = st["url"]
     expect = st.get("expect") or url.split("//")[-1].split("/")[0].replace("www.", "")
     rec["expect"] = expect
-    w = None
-    for x in windows():
-        t = clean(x["title"])
-        if any(k in t for k in BROWSERS) and (not st.get("browser") or clean(st["browser"]) in t):
-            if w is None or (x["rect"][0] > -30000 and w["rect"][0] <= -30000):
-                w = x
     b = _brain(transport)
     try:
-        if w:
-            rec["mode"] = "existing"
-            restore(w)
-            time.sleep(0.6)
-            dr.focus_hwnd(int(w["hwnd"]))
-            time.sleep(0.5)
-            if st.get("new_tab", True):
-                b.key("ctrl+t")
-                time.sleep(0.7)
-            b.key("ctrl+l")
-            time.sleep(0.4)
-            b.type_text(url)
-            time.sleep(0.7)
-            for _ in range(3):        # 输入法若在组字，第一下回车只是提交
-                b.key("enter")
-                time.sleep(2.0)
-                cur = [x for x in windows() if int(x["hwnd"]) == int(w["hwnd"])]
-                if cur and clean(expect) in clean(cur[0]["title"]):
-                    break
-        else:
-            rec["mode"] = "launch"
-            b.key("win+r")
-            time.sleep(1.2)
-            b.type_text(url)
-            time.sleep(0.6)
-            b.key("enter")
-            time.sleep(1.0)
-            b.key("enter")
+        b.key("win+r")
+        time.sleep(1.2)
+        b.type_text(url)
+        time.sleep(0.6)
+        b.key("enter")
     finally:
         b.release()
 

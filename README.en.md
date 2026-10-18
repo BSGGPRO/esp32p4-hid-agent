@@ -49,7 +49,7 @@ All of these have actually been run, not just planned (measured timings [below](
 | Scenario | One job |
 |---|---|
 | **Send a WeChat message** | `{"op":"recipe","name":"wechat-send","to":"文件传输助手","pieces":["py:nihao"]}` — checks the chat header, clears the box, picks IME candidates, verifies before Enter, then verifies the bubble after |
-| **Open a URL** | `{"op":"recipe","name":"open-url","url":"https://github.com"}` — new tab if a browser is open, Win+R otherwise, then verifies the window title |
+| **Open a URL** | `{"op":"recipe","name":"open-url","url":"https://github.com"}` — hands it to the OS (Win+R, bypassing the address bar's autocomplete), then verifies the window title |
 | **Drive an app you have never seen** | `{"op":"ui","exe":"cloudmusic"}` — returns the window's text lines plus candidate buttons with screen coordinates, so icon-only buttons can be located too |
 | **Skip a track** | `ui` finds the button → `click` → verify by the window title |
 
