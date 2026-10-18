@@ -74,8 +74,34 @@ canvas: 24,24,976,976
 也可以直接喂本工具自己输出的 `plan-*.json`（里面有 `canvas_box` 就连画布位置一起用），
 等于「先预览、后重放、再真画」。
 
+## 5b. 字符画（ASCII art）→ 图 → 画（2026-10-18 上午补充）
+
+用户拿到的常常不是图片，而是一段**字符画**（网页里 `<pre>` 一大段字符，或 .txt）。
+这段文字本身就是图，`tools/ascii-to-image.py` 把它还原成 PNG 再走上面的流程：
+
+```
+python tools\ascii-to-image.py art.html                          # 还原 -> inbox\ascii-<时间>.png
+python tools\ascii-to-image.py art.html --aspect 2.0 --map classic
+python tools\draw-image.py "inbox\ascii-xxx.png" --mode sketch --draw
+```
+
+关键参数（都是踩过的坑）：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--aspect` | 1.0 | 每个字符单元「高/宽」。字符画生成器通常按 2:1 显示补偿；`rows/cols ≈ H/W/2` 时用 2.0 |
+| `--map` | coverage | `coverage` = 用真实等宽字体量每个字符的承墨量；`classic` = 按常见 70 级梯度序号（字符集是该梯度的子集时最准） |
+| `--equalize` | 关 | 按承墨量排名均匀铺开对比度（不知道生成器用哪套梯度时更保险） |
+| `--scale` | 2 | 每字符像素数；只用于看图/规划时可设 1 |
+| `--invert` | 关 | 反相 |
+
+判断 `--aspect` 的算术：字符画 `cols×rows`，若生成器做了 2:1 补偿，则
+`rows ≈ H/W × cols ÷ 2`，反推原图高宽比 `H/W ≈ 2×rows/cols`。
+实测样例：1000×1086 → 原图约 1080×2340（手机截图比例），故 `--aspect 2.0`。
+
 ## 6. 证据
 
 `docs/evidence/image-to-draw-20261018.txt`：多格式 ingest、三种模式的笔画数/相似度、
 页面自检 70/70、6/6 视口；`--from-plan` 文字计划实测（JSON 26 笔重放、
-文本 4 笔/2 笔解析）。
+文本 4 笔/2 笔解析）；ASCII 字符画还原 + 真画实测（1000×1086 字符 → 1000×2172 图 →
+141 笔 354 顶点 16.7 s 画完，0 次被打断）。

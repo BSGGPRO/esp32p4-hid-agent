@@ -100,6 +100,7 @@
     "tools/draw-rage.py --mock     # 离屏验证几何",
     "tools/ingest-image.py --clipboard          # 剪贴板图 -> 统一 PNG",
     "tools/ingest-image.py <任意格式图片> --thumb 1200",
+    "tools/ascii-to-image.py art.html --aspect 2.0 --map classic   # ASCII 字符画 -> PNG",
     "tools/draw-image.py <图> --mode line        # 只规划 + 预览 + 相似度（默认不落笔）",
     "tools/draw-image.py <图> --mode sketch --edge 40",
     "tools/draw-image.py <图> --mode grid --cell 10 --canvas 0,0,600,600",

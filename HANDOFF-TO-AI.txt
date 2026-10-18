@@ -377,11 +377,15 @@ TCP 透传 127.0.0.1:8766
 （阈值/细化/追踪/简化），你只要能跑命令就能画。判断画得像不像用数值指标，
 最后像不像让用户（或能看图的模型）拍板。
 
-【Step 1 收图】两种入口，任意格式（png/jpg/jpeg/webp/bmp/gif/tif/tiff/svg，
+【Step 1 收图】三种入口，任意格式（png/jpg/jpeg/webp/bmp/gif/tif/tiff/svg，
   手机 HEIC 先在相册里导出 JPG）：
   a) 用户把文件放电脑上 -> 记住路径
   b) 用户复制了一张图（截图/网页图）-> python tools\ingest-image.py --clipboard
-  ingest-image.py 输出一行 JSON：{"ok":true,"path":"...png","size":[w,h],"thumb":...}
+  c) 用户给的是一段「字符画」（.html 里的 <pre> 或 .txt）-> 先还原成图：
+     python tools\ascii-to-image.py art.html --aspect 2.0 --map classic
+     aspect：若 rows ≈ H/W × cols ÷ 2（生成器做了 2:1 补偿）就用 2.0；
+     想更保守不知道就 --equalize（按承墨量排名铺对比度）
+  ingest-image.py / ascii-to-image.py 输出一行 JSON：路径、尺寸、统计
   ★ 手机传图接口已撤掉（价值不大）。手机照片请先存到电脑，或用微信/QQ 传到电脑。
   ★ 更好用的一条路：让能看图的模型把图转成「坐标文字」，你用 --from-plan 直接画
     （见 Step 2b；这也是用户现在偏好的方式）。
