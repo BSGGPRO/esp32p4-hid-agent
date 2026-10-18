@@ -27,6 +27,9 @@ jobs:
 
       - name: 仪表盘自检（离线拉起 hub，不碰板子）
         run: python tests/web_selftest.py
+        env:
+          # runner 的默认编码是 cp1252，hub 子进程打印中文会炸
+          PYTHONUTF8: "1"
 
   docs:
     runs-on: ubuntu-latest
