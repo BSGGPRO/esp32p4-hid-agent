@@ -76,14 +76,59 @@ def _ensure_loaded() -> None:
         _load()
 
 
+def _fullscreen() -> bool:
+    """前台窗口是不是真的"全屏"（盖住整块屏幕，连任务栏一起盖）。
+
+    判据用监视器矩形而不是屏幕尺寸：**最大化窗口盖不住任务栏**，全屏游戏/全屏视频会。
+    这样窗口化的游戏就算铺满桌面也不会被误判，DPI 缩放也不影响比较（两边同一套坐标）。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        h = u.GetForegroundWindow()
+        if not h:
+            return False
+        mon = u.MonitorFromWindow(wintypes.HWND(h), 2)      # MONITOR_DEFAULTTONEAREST
+        if not mon:
+            return False
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if not u.GetMonitorInfoW(mon, ctypes.byref(mi)):
+            return False
+        r = wintypes.RECT()
+        if not u.GetWindowRect(wintypes.HWND(h), ctypes.byref(r)):
+            return False
+        m = mi.rcMonitor
+        return (r.left <= m.left + 2 and r.top <= m.top + 2
+                and r.right >= m.right - 2 and r.bottom >= m.bottom - 2)
+    except Exception:                       # noqa: BLE001 — 判不出来就当不是，别误伤
+        return False
+
+
+GAME_UNLOAD_AFTER = 5.0          # 全屏时：最后一次用完 5 秒就卸（比空转阈值激进得多）
+
+
+def _game_mode() -> bool:
+    """全屏 = 用户很可能在游戏/看全屏视频，这时候不抢显存。可用 DSV_GAME_MODE=0 关掉。"""
+    return os.environ.get("DSV_GAME_MODE", "1") != "0" and _fullscreen()
+
+
 def _idle_watch() -> None:
-    """空转超过 IDLE_UNLOAD 秒就把模型卸掉，把显存还给用户。"""
+    """把显存还回去：空转 IDLE_UNLOAD 秒，或者一进全屏就尽快卸。"""
     while True:
-        time.sleep(10)
-        if not _state["ready"] or not IDLE_UNLOAD:
+        time.sleep(5)
+        if not _state["ready"]:
             continue
         idle = time.time() - (_state["last_used"] or time.time())
-        if idle >= IDLE_UNLOAD:
+        if _game_mode() and idle >= GAME_UNLOAD_AFTER:
+            _free_model()
+        elif IDLE_UNLOAD and idle >= IDLE_UNLOAD:
             _free_model()
 
 
@@ -214,6 +259,7 @@ def _serve() -> None:
                 self._send(200, {"ready": _state["ready"], "ocr": _state["ocr_ready"],
                                  "model": MODEL_ID, "vram_mb": _state["vram_mb"],
                                  "idle_s": idle, "idle_unload_s": int(IDLE_UNLOAD),
+                                 "fullscreen": _fullscreen(), "game_mode": _game_mode(),
                                  "pid": os.getpid()})
             else:
                 self._send(404, {"err": "unknown"})

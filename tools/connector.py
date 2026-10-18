@@ -524,6 +524,29 @@ def _point_of(st: dict, vars: dict):
     raise RuntimeError("%s 需要 x,y 或 on=<find 的变量>" % st.get("op"))
 
 
+_INPUT_OPS = {"key", "type", "click", "move", "point", "drag", "drag_path",
+              "hold", "scroll", "recipe"}
+
+
+def _game_guard(st: dict) -> None:
+    """全屏应用在跑（游戏/全屏视频）时，绝不往里发键鼠。
+
+    这是安全约定，不是建议：全屏下按键直接进游戏，手滑一下就是误操作。
+    确实要操作就显式写 "force": true。
+    """
+    if st.get("force") or st.get("op") not in _INPUT_OPS:
+        return
+    try:
+        import visiond
+
+        fs = visiond._fullscreen()
+    except Exception:  # noqa: BLE001 — 判不出来就不拦，别把工具卡死
+        return
+    if fs:
+        raise RuntimeError("前台是全屏应用（全屏游戏/视频），按安全约定不发送键鼠；"
+                           "确认要操作就加 \"force\": true")
+
+
 def run_job(job: dict | list, transport: str = "tcp") -> dict:
     steps = job.get("steps") if isinstance(job, dict) else job
     steps = steps or []
@@ -535,6 +558,7 @@ def run_job(job: dict | list, transport: str = "tcp") -> dict:
             op = st.get("op")
             rec: dict = {"i": i, "op": op}
             try:
+                _game_guard(st)          # 全屏里不发送键鼠（除非 force）
                 if op in ("restore", "focus", "title"):
                     w = pick(st.get("title", ""))
                     if not w:

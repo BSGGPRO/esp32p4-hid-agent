@@ -129,6 +129,27 @@ Measured back to back: `nvidia-smi` whole-card usage **3780 MiB → 1171 MiB** (
 On compute: idle it runs nothing, so it does not cost frames; frames only drop if a job asks
 the model something *while you are playing* — which now only happens when you ask for it.
 
+### Fullscreen = game mode (automatic)
+
+It can tell when you are busy: **the moment a fullscreen window takes the foreground, the model
+unloads within 5 seconds and no keyboard/mouse input is sent into it at all.**
+
+| What you are doing | What it does |
+|---|---|
+| Fullscreen game / fullscreen video | unloads the model (VRAM goes back to the game); refuses `key` `type` `click` `move` `point` `drag` `hold` `scroll` `recipe` |
+| You really do need to act | that step needs `"force": true` |
+| You leave fullscreen | `fullscreen` goes back to false; the next vision call loads it again (12–25 s) |
+| You want it off | set `DSV_GAME_MODE=0` |
+
+The test is "the foreground window covers the whole monitor *including the taskbar*", not "how big
+is the window": **maximized windows never cover the taskbar**, so windowed games and maximized
+browsers are not misdetected. `python tools/visiond.py --status` reports `fullscreen` and
+`game_mode` directly.
+
+Verified end to end with a real fullscreen window standing in for a game: within 3 s
+`fullscreen: true`, model 2470 MB → 0, whole card 3560 → 956 MiB, input refused with an explicit
+reason; after closing it, `fullscreen: false`.
+
 ---
 
 ## Image → drawing
