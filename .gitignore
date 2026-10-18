@@ -19,6 +19,7 @@ e2e_after.png
 
 # evidence captured on one specific machine (contains desktop screenshots)
 docs/evidence/
+pc/evidence/*.png
 
 # runtime lock file (created by tools/board_lock.py)
 .board.lock

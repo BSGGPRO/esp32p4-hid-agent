@@ -102,14 +102,14 @@ def log_path() -> str:
 
 
 def write_crash(where: str, exc_info: str) -> str:
-    """把异常写进日志文件，返回日志路径（写不进去也不许再抛）。"""
+    """把异常写进日志文件。写成功返回路径，写不进去返回空串——绝不能冒报「已写入」。"""
     p = log_path()
     try:
         with open(p, "a", encoding="utf-8") as f:
             f.write("\n===== %s | %s =====\n%s\n"
                     % (time.strftime("%Y-%m-%d %H:%M:%S"), where, exc_info))
     except OSError:
-        pass
+        return ""
     return p
 
 
@@ -225,7 +225,11 @@ class App(tk.Tk):
         """按钮回调里的异常不会传到 main() 的 try；--windowed 下 stderr 是 None，
         tkinter 默认处理器自己还会抛一次，结果就是"点了没反应、什么都没有"。"""
         where = write_crash("回调", "".join(traceback.format_exception(exc, val, tb)))
-        text = "%s: %s\n\n详情：%s" % (exc.__name__, val, where)
+        text = "%s: %s" % (exc.__name__, val)
+        if where:
+            text += "\n\n详情：%s" % where
+        else:
+            text += "\n\n（崩溃日志没写成，可能是目录不可写。）"
         try:
             self._log(text, "bad")
         except Exception:                                    # noqa: BLE001
@@ -338,6 +342,8 @@ class App(tk.Tk):
                 self._log(text)
         except queue.Empty:
             pass
+        except tk.TclError:
+            return                       # 窗口已经销毁，轮询到此为止
         if self._pending <= 0:
             self._pending = 0
             if self._busy:
@@ -438,7 +444,7 @@ def windowless_selftest() -> dict:
 
 
 def main() -> int:
-    if os.environ.get("AGENT_UI_SELFTEST"):
+    if "--selftest" in sys.argv or os.environ.get("AGENT_UI_SELFTEST"):
         r = windowless_selftest()
         p = os.path.join(os.environ.get("TEMP") or ".", "agent-ui-selftest.json")
         try:
@@ -455,7 +461,8 @@ def main() -> int:
         app = App()
     except Exception:                                        # noqa: BLE001
         where = write_crash("启动", traceback.format_exc())
-        msg = "控制器没能打开窗口。\n详情已写入：\n%s" % where
+        msg = "控制器没能打开窗口。"
+        msg += ("\n详情已写入：\n%s" % where) if where else "\n（崩溃日志也没写成，可能是目录不可写。）"
         try:                                  # 先试 tkinter 弹窗（好看）
             root = tk.Tk()
             root.withdraw()

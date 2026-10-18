@@ -22,7 +22,7 @@
 仓库     <repo>
 Python   %USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
          （3.12；有 Pillow；没有 pyserial —— 用 tcp 透传不需要）
-hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.221:8765）
+hub      http://127.0.0.1:8765        （局域网/手机：http://192.168.1.100:8765）
 透传     127.0.0.1:8766                （brain.py 的 --transport tcp 就连这里）
 板子     JC-ESP32P4-M3-DEV，固件 v1.2.0 / proto 1.2，USB VID_303A PID_4004
 串口     COM7 @115200，JSON-lines（不要直接抢）

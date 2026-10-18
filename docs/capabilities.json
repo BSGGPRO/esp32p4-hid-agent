@@ -10,7 +10,7 @@
     "python": "%USERPROFILE%\\.dsh\\dsh-runtimes\\dsh-primary-runtime\\dependencies\\python\\python.exe",
     "python_version": "3.12",
     "hub_http": "http://127.0.0.1:8765",
-    "hub_lan": "http://192.168.1.221:8765",
+    "hub_lan": "http://192.168.1.100:8765",
     "tcp_passthrough": "127.0.0.1:8766",
     "board": {
       "model": "JC-ESP32P4-M3-DEV",

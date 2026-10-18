@@ -58,7 +58,7 @@ Windows 上，通过 USB 枚举成「键盘 + 鼠标」复合 HID 设备（VID 0
 Python（唯一解释器，别用 PATH 上的 python，那是商店占位符）
   %USERPROFILE%\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe
 hub 网页 / 接口
-  http://127.0.0.1:8765          （局域网/手机：http://192.168.1.221:8765）
+  http://127.0.0.1:8765          （局域网/手机：http://192.168.1.100:8765）
 TCP 透传（brain.py --transport tcp 连这里）
   127.0.0.1:8766
 板子
@@ -310,7 +310,7 @@ hub 挂了                            计划任务 dsh-hub 可手动启动；看
 ================================================================================
 页面（只读板子状态 + DFS 开关）
   http://127.0.0.1:8765/            本机
-  http://192.168.1.221:8765/        局域网 / 手机（同一 Wi-Fi）
+  http://192.168.1.100:8765/        局域网 / 手机（同一 Wi-Fi）
   内容：CPU 双核占用/频率、内存、PSRAM、温度、任务表、TF 卡、UART、PM（含实测 MHz）、
         DFS 开关（fixed360 <-> adaptive）、立即刷新。页面已移除本机 PC 面板。
   改样式后要 Ctrl+F5；自检：python tools\web-layout-check.py（6 视口 + 真实点击）

@@ -142,8 +142,9 @@ hub        ✓ http://127.0.0.1:8765   串口 COM7 已打开
 补一句：EXE 每次启动都要自解压到临时目录。如果日志里是 `Could not create temporary directory`，
 说明那个目录不让写临时文件——把 EXE 挪到普通文件夹（比如桌面）再双击。
 
-还想确认"EXE 本身有没有坏"：在命令行里先 `set AGENT_UI_SELFTEST=1`，再运行这个 EXE，它会不开窗口、
-只跑一遍关键路径（说明书能不能读、能不能存、窗口能不能建），结果写进 `%TEMP%\agent-ui-selftest.json`。
+还想确认"EXE 本身有没有坏"：命令行里跑 `esp32p4-agent-ui.exe --selftest`（或先 `set AGENT_UI_SELFTEST=1`
+再运行），它不开窗口、只跑一遍关键路径（说明书能不能读、能不能存、窗口能不能建、26 个操作在不在），
+结果写进 `%TEMP%\agent-ui-selftest.json`，全通过退出码 0。窗口版没有控制台，所以看文件、别看屏幕。
 
 ---
 

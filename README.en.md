@@ -87,7 +87,7 @@ All of these have actually been run, not just planned (measured timings [below](
 
 | Scenario | One job |
 |---|---|
-| **Send a WeChat message** | `{"op":"recipe","name":"wechat-send","to":"文件传输助手","pieces":["py:nihao"]}` — checks the chat header, clears the box, picks IME candidates, verifies before Enter, then verifies the bubble after |
+| **Type a line into Notepad** | `{"op":"focus","title":"记事本"}` → `{"op":"type","text":"hello from the board"}` → `{"op":"ocr","rect":[0,0,800,200]}` — verify the window title first, read the text back after |
 | **Open a URL** | `{"op":"recipe","name":"open-url","url":"https://github.com"}` — hands it to the OS (Win+R, bypassing the address bar's autocomplete), then verifies the window title |
 | **Drive an app you have never seen** | `{"op":"ui","exe":"cloudmusic"}` — returns the window's text lines plus candidate buttons with screen coordinates, so icon-only buttons can be located too |
 | **Skip a track** | `ui` finds the button → `click` → verify by the window title |
@@ -159,7 +159,7 @@ Every operation accepts `require`; when it does not match, the job stops.
 | Observe | `look` `ocr` `find` `diff` `wait_change` `read_text` | `find` locates a line of text in a region and returns its centre |
 | Vision | `see` `check` `vision` | `check` is yes/no only; `see` answers in one sentence; `vision action=unload` frees VRAM |
 | System | `clip` `launch` `wait` | Clipboard read/write, start a program, sleep |
-| Recipes | `recipe` | `wechat-send`, `open-url` — finished actions that verify themselves |
+| Recipes | `recipe` | `open-url` — finished actions that verify themselves |
 
 ### Unfamiliar UI: let `ui` read it
 
@@ -367,6 +367,17 @@ UART only: protocol works but there are no hands. High-speed only: it is a keybo
 | [docs/image-to-draw.md](docs/image-to-draw.md) | Image → strokes → drawing |
 
 ---
+
+## Disclaimer
+
+Provided "as is", without warranty of any kind. The author is not liable for any damages arising
+from its use, including data loss, device damage, account suspension, or violations of third-party
+terms of service.
+
+- This is a **hardware HID** tool: it produces real mouse and keyboard input on this machine.
+  Do not run it unattended, and do not point it at irreversible actions.
+- Use it only on devices you own or are authorized to use.
+- Not affiliated with, endorsed by, or sponsored by any third-party software, platform, or vendor.
 
 ## License
 
