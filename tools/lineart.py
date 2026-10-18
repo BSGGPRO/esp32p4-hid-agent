@@ -31,6 +31,16 @@ from PIL import Image
 
 DEFAULT_CKPT = os.path.join(os.path.expanduser("~"), ".dsh", "models", "lineart",
                             "ControlNetHED.pth")
+MODEL_DIR = os.path.dirname(DEFAULT_CKPT)
+
+# Informative Drawings（CVPR 2022，专训「照片->看得懂的线稿」）的 ONNX 版本
+ID_MODELS = {
+    "anime": "informative-drawings_anime_768x768.onnx",
+    "anime768": "informative-drawings_anime_768x768.onnx",
+    "contour": "informative-drawings_contour_768x768.onnx",
+    "contour768": "informative-drawings_contour_768x768.onnx",
+    "contour1024": "informative-drawings_contour_1024x1024.onnx",
+}
 
 
 def _utf8_stdio() -> None:
@@ -127,9 +137,31 @@ def nms_thin(x: np.ndarray, thresh: float, sigma: float) -> np.ndarray:
     return out
 
 
+def id_lines(photo: str, model: str, crop: bool = True) -> Image.Image:
+    """Informative Drawings：照片 -> 线稿（白底黑线）。模型固定输入 768/1024 方图。"""
+    import onnxruntime as ort
+
+    sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
+    size = int(sess.get_inputs()[0].shape[-1])
+    im = Image.open(photo).convert("RGB")
+    sc = size / float(max(im.size))
+    small = im.resize((max(2, int(im.width * sc)), max(2, int(im.height * sc))), Image.LANCZOS)
+    canvas = Image.new("RGB", (size, size), (255, 255, 255))
+    ox, oy = (size - small.width) // 2, (size - small.height) // 2
+    canvas.paste(small, (ox, oy))
+    x = np.asarray(canvas, dtype=np.float32) / 127.5 - 1.0
+    y = sess.run(None, {sess.get_inputs()[0].name: x.transpose(2, 0, 1)[None]})[0]
+    g = y[0, 0]
+    g = (g - float(g.min())) / (float(g.max()) - float(g.min()) + 1e-9)   # 0=线, 1=白
+    img = Image.fromarray((g * 255.0).astype(np.uint8), mode="L")
+    if crop:
+        img = img.crop((ox, oy, ox + small.width, oy + small.height))
+    return img
+
+
 def main(argv: list[str] | None = None) -> int:
     _utf8_stdio()
-    ap = argparse.ArgumentParser(description="照片 -> 线稿（HED, GPU）")
+    ap = argparse.ArgumentParser(description="照片 -> 线稿（HED 或 Informative Drawings）")
     ap.add_argument("photo")
     ap.add_argument("--out", default=None, help="输出 PNG（默认同目录 *-lineart.png）")
     ap.add_argument("--ckpt", default=DEFAULT_CKPT)
@@ -138,11 +170,37 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--scale", type=int, default=1200, help="长边像素")
     ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     ap.add_argument("--invert", action="store_true", help="黑底白线")
+    ap.add_argument("--engine", default="hed", choices=["hed", "id"],
+                    help="hed=通用边缘(快,纹理多) / id=Informative Drawings(专训照片线稿)")
+    ap.add_argument("--id-model", default="anime",
+                    help="id 引擎的模型：anime / contour / contour1024")
+    ap.add_argument("--no-crop", action="store_true", help="id 输出不裁掉白边")
     a = ap.parse_args(argv)
 
     if not os.path.isfile(a.photo):
         print(json.dumps({"ok": False, "err": "照片不存在: %s" % a.photo}, ensure_ascii=False))
         return 1
+    outp = a.out or (os.path.splitext(a.photo)[0] + "-lineart.png")
+
+    if a.engine == "id":
+        model = ID_MODELS.get(a.id_model, a.id_model)
+        if not os.path.isabs(model):
+            model = os.path.join(MODEL_DIR, model)
+        if not os.path.isfile(model):
+            print(json.dumps({"ok": False, "err": "缺模型: %s" % model,
+                              "hint": "hf-mirror.com/x-Liola-x/informative-drawings-onnx"},
+                             ensure_ascii=False))
+            return 2
+        out_img = id_lines(a.photo, model, crop=not a.no_crop)
+        if a.invert:
+            out_img = Image.fromarray(255 - np.asarray(out_img, dtype=np.uint8), mode="L")
+        os.makedirs(os.path.dirname(os.path.abspath(outp)), exist_ok=True)
+        out_img.convert("RGB").save(outp, "PNG")
+        dark = int((np.asarray(out_img) < 128).sum())
+        print(json.dumps({"ok": True, "out": outp, "engine": "id", "model": os.path.basename(model),
+                          "size": list(out_img.size), "line_px": dark}, ensure_ascii=False))
+        return 0
+
     if not os.path.isfile(a.ckpt):
         print(json.dumps({"ok": False, "err": "缺模型权重: %s" % a.ckpt,
                           "hint": "从 lllyasviel/Annotators 下 ControlNetHED.pth"},
@@ -158,12 +216,11 @@ def main(argv: list[str] | None = None) -> int:
     edge = hed_edges(rgb, a.ckpt, a.device)
     lines = nms_thin(edge, a.thresh, a.blur)
     out_img = Image.fromarray(255 - lines if not a.invert else lines, mode="L").convert("RGB")
-    outp = a.out or (os.path.splitext(a.photo)[0] + "-lineart.png")
     os.makedirs(os.path.dirname(os.path.abspath(outp)), exist_ok=True)
     out_img.save(outp, "PNG")
 
     import torch
-    print(json.dumps({"ok": True, "out": outp, "size": list(out_img.size),
+    print(json.dumps({"ok": True, "out": outp, "engine": "hed", "size": list(out_img.size),
                       "device": a.device if a.device != "auto" else
                       ("cuda" if torch.cuda.is_available() else "cpu"),
                       "thresh": a.thresh, "blur": a.blur,

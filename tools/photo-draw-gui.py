@@ -21,11 +21,20 @@ CLI = os.path.join(_HERE, "photo-to-draw.py")
 PY = sys.executable
 CREATE_NO_WINDOW = 0x08000000
 
+QUALITY_KEYS = ("sketch", "quick", "good", "hd")
 QUALITY_TEXT = {
-    "quick": "快速（笔画少，十几秒到半分钟）",
-    "good": "标准（推荐，明暗层次好，1-3 分钟）",
-    "hd": "精细（最慢，可能 5-10 分钟）",
+    "sketch": "线稿（推荐，轮廓清楚，约 1-2 分钟）",
+    "quick": "快速素描（笔画少，十几秒到半分钟）",
+    "good": "标准素描（明暗层次好，1-3 分钟）",
+    "hd": "精细素描（最慢，可能 5-10 分钟）",
 }
+# (画布尺寸 or None=只预览, 界面文字)
+CANVASES = [
+    ("760x1040", "竖图 760x1040（推荐，约 2 分钟）"),
+    ("1040x760", "横图 1040x760（更细，约 3-5 分钟）"),
+    ("820x600", "小画布 820x600（最快）"),
+    (None, "只预览 900x900（不动鼠标）"),
+]
 
 
 class App:
@@ -55,13 +64,11 @@ class App:
         mid.pack(fill="x", **pad)
         tk.Label(mid, text="质量：", fg=fg, bg=bg).pack(side="left")
         self.quality = ttk.Combobox(mid, state="readonly", width=34,
-                                    values=[QUALITY_TEXT[k] for k in ("quick", "good", "hd")])
-        self.quality.current(1)
+                                    values=[QUALITY_TEXT[k] for k in QUALITY_KEYS])
+        self.quality.current(0)
         self.quality.pack(side="left", padx=6)
         self.canvas_mode = ttk.Combobox(mid, state="readonly", width=30,
-                                        values=["画布 820x600（推荐，约 3-5 分钟）",
-                                                "画布 1040x760（更细，约 6-9 分钟）",
-                                                "画布 900x900（只预览，不动鼠标）"])
+                                        values=[t for _, t in CANVASES])
         self.canvas_mode.current(0)
         self.canvas_mode.pack(side="left", padx=6)
         self.clear_var = tk.BooleanVar(value=True)
@@ -112,7 +119,7 @@ class App:
             self.preview()
 
     def quality_key(self) -> str:
-        return ("quick", "good", "hd")[self.quality.current()]
+        return QUALITY_KEYS[self.quality.current()]
 
     def run_cli(self, extra: list[str]) -> None:
         if not self.photo:
@@ -201,15 +208,15 @@ class App:
 
     def preview(self) -> None:
         self.pending_open = True          # 预览完自动把图弹出来
-        self.run_cli(["--canvas", "0,0,900,900"])
+        canvas, _label = CANVASES[self.canvas_mode.current()]
+        self.run_cli(["--canvas", "0,0," + (canvas or "900x900").replace("x", ",")])
 
     def draw(self) -> None:
-        idx = self.canvas_mode.current()
-        if idx == 2:                      # 只预览，不碰鼠标
+        canvas, _label = CANVASES[self.canvas_mode.current()]
+        if not canvas:                    # 只预览，不碰鼠标
             self.say("选了「只预览」，走预览流程。")
             self.preview()
             return
-        canvas = "1040x760" if idx == 1 else "820x600"
         if not messagebox.askokcancel("开始真画？",
                                       "接下来会自动打开「画图」、准备 %s 的白画布，"
                                       "然后板子鼠标一笔一笔画。\n\n"

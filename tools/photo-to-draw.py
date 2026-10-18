@@ -37,6 +37,9 @@ INBOX = os.path.join(_WORKSPACE, "inbox")
 DRAW = os.path.join(_HERE, "draw-image.py")
 
 PRESETS = {
+    # 线稿：Informative Drawings 出轮廓，再一笔笔描（用户认可的那个效果，最快）
+    "sketch": {"engine": "id", "id_model": "anime", "thresh": 200,
+               "simplify": 2.0, "min_len": 8, "brush": 3},
     "quick": {"levels": "95,145,200", "simplify": 2.4, "min_len": 10, "brush": 3},
     "good": {"levels": "90,125,160,200", "simplify": 2.2, "min_len": 8, "brush": 4},
     "hd": {"levels": "70,95,120,145,170,195,220", "simplify": 1.6, "min_len": 7, "brush": 5},
@@ -56,7 +59,9 @@ def main(argv=None) -> int:
     _utf8_stdio()
     ap = argparse.ArgumentParser(description="照片 -> 画（默认只预览，--draw 才落笔）")
     ap.add_argument("photo", help="照片路径（png/jpg/webp/bmp/tif…）")
-    ap.add_argument("--quality", default="good", choices=sorted(PRESETS), help="质量档位")
+    ap.add_argument("--quality", default="sketch", choices=sorted(PRESETS),
+                    help="sketch=线稿(推荐) / quick / good / hd=等值线素描")
+    ap.add_argument("--id-model", default="", help="线稿模型：anime（默认）/ contour / contour1024")
     ap.add_argument("--draw", action="store_true", help="真的用板子画（会动鼠标）")
     ap.add_argument("--canvas", default=None, help="'x1,y1,x2,y2' 或 '宽x高'；不给就在 --draw 时自动检测画图")
     ap.add_argument("--out", default=None, help="输出前缀")
@@ -88,12 +93,37 @@ def main(argv=None) -> int:
     base = a.out or os.path.join(INBOX, "photo-%s" % ts)
     pres = PRESETS[a.quality]
 
-    cmd = [sys.executable, DRAW, a.photo, "--mode", "engrave",
-           "--levels", a.levels or pres["levels"],
-           "--simplify", str(a.simplify or pres["simplify"]),
-           "--min-len", str(pres["min_len"]),
-           "--preview-width", "4", "--out", base, "--transport", a.transport,
-           "--brush-size", str(a.brush_size or pres["brush"]), "--brush-kind", a.brush_kind]
+    src = a.photo
+    extra = {}
+    if pres.get("engine") == "id":
+        # 先过 Informative Drawings 出线稿（人看得懂的轮廓），再描线
+        art = base + "-lineart.png"
+        step = [sys.executable, os.path.join(_HERE, "lineart.py"), a.photo,
+                "--engine", "id", "--id-model", a.id_model or pres.get("id_model", "anime"),
+                "--out", art]
+        p1 = subprocess.run(step, capture_output=True, text=True, encoding="utf-8",
+                            errors="replace")
+        if not os.path.isfile(art):
+            print(json.dumps({"ok": False, "err": "线稿生成失败",
+                              "stderr": (p1.stderr or "")[-800:],
+                              "stdout": (p1.stdout or "")[-800:]}, ensure_ascii=False))
+            return 2
+        extra["lineart"] = art
+        src = art
+        cmd = [sys.executable, DRAW, src, "--mode", "line",
+               "--thresh", str(pres["thresh"]),
+               "--simplify", str(a.simplify or pres["simplify"]),
+               "--min-len", str(pres["min_len"]),
+               "--out", base, "--transport", a.transport,
+               "--brush-size", str(a.brush_size or pres["brush"]),
+               "--brush-kind", a.brush_kind]
+    else:
+        cmd = [sys.executable, DRAW, a.photo, "--mode", "engrave",
+               "--levels", a.levels or pres["levels"],
+               "--simplify", str(a.simplify or pres["simplify"]),
+               "--min-len", str(pres["min_len"]),
+               "--preview-width", "4", "--out", base, "--transport", a.transport,
+               "--brush-size", str(a.brush_size or pres["brush"]), "--brush-kind", a.brush_kind]
     if a.canvas:
         cmd += ["--canvas", a.canvas]
     if a.no_invert:
@@ -131,6 +161,8 @@ def main(argv=None) -> int:
     res["photo"] = a.photo
     res["seconds"] = round(time.time() - t0, 1)
     res["cmd"] = " ".join(cmd)
+    if extra:
+        res.update(extra)
     print(json.dumps(res, ensure_ascii=False, indent=2))
     return 0 if res.get("ok") else 3
 
