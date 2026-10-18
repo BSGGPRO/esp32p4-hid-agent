@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Stop'
 $IdfRoot   = 'D:\esp'
 $IdfVer    = 'idf-full\esp-idf-v5.5.6'   # 官方完整包（含 .git + 全部 submodule）；GitHub 自动 tarball 不含 submodule，不可用
 $GitCands  = @('C:\Program Files\Git\cmd', 'D:\esp\PortableGit\bin')
-$PyCands   = @('C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python')
+$PyCands   = @("$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python", 'C:\Python312', 'C:\Python311')
 
 $env:IDF_PATH             = Join-Path $IdfRoot $IdfVer
 $env:IDF_TOOLS_PATH       = Join-Path $IdfRoot '.espressif'

@@ -271,13 +271,11 @@
       sel.addEventListener('change', function () { setLang(sel.value); });
     }
     apply();
-    // app.js 每秒重写文字：翻译完再看一眼，变了就补翻（自身修改不会触发死循环，有 applying 闸）
-    var pending = null;
-    new MutationObserver(function () {
-      if (applying) return;
-      if (pending) return;
-      pending = setTimeout(function () { pending = null; apply(); }, 60);
-    }).observe(document.body, { subtree: true, childList: true, characterData: true });
+    // app.js 每秒重写文字：必须在同一个微任务里补翻完。用定时器延后哪怕 60ms，
+    // 浏览器就会先画出中文、再画一次英文——看起来就是"选项在中英之间闪"。
+    // MutationObserver 的回调在同一帧渲染前执行，所以这里不加任何延时。
+    new MutationObserver(function () { apply(); })
+      .observe(document.body, { subtree: true, childList: true, characterData: true });
   }
 
   window.P4I18N = { setLang: setLang, apply: apply, get lang() { return lang; } };

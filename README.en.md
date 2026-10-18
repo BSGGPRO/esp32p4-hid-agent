@@ -19,20 +19,42 @@ Hardware-level input, no driver, no software injection.
 
 ---
 
-## Quick start
+## From zero on a fresh machine
+
+Two prerequisites, once each:
+
+| Prerequisite | How | Passes when |
+|---|---|---|
+| Python 3.12 + Pillow | `python -m pip install -r pc/requirements.txt` | `python -c "import PIL; print(PIL.__version__)"` prints a version |
+| CH340 serial driver | run `tools\install-ch340-admin.cmd` as admin (or let Windows install it) | Device Manager shows `USB-SERIAL CH340 (COMx)` under Ports |
+
+Then four commands, each with what you should see:
 
 ```bash
-# 0) Windows + Python 3.12; plug BOTH ports of the board (see "Wiring")
-# 1) Start the service (owns the serial port, serves TCP passthrough + the dashboard)
-python pc/hub.py                                 # http://127.0.0.1:8765 · TCP 127.0.0.1:8766
+git clone https://github.com/BSGGPRO/esp32p4-hid-agent.git && cd esp32p4-hid-agent
+
+# 1) Build + flash (needs ESP-IDF v5.5.6; replace COM7 with your port)
+#    a fresh clone has no build/; sdkconfig.defaults and partitions.csv are tracked
+tools\idf.cmd set-target esp32p4
+tools\idf.cmd build
+tools\idf.cmd -p COM7 flash
+#  → last line "Hash of data verified."; "P4 HID Bridge" appears once the HS port is plugged in
 
 # 2) Self-check: screen / OCR / board / pointer / vision in one shot
-python tools/connector.py --selfcheck            # exit code 0 when all five pass
+python tools/connector.py --selfcheck
+#  → {"ok": true, ...}, exit code 0
 
-# 3) Smallest job: move the pointer to (1200,600), read the foreground window title
-echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"title","title":"Notepad"}]}' \
-  | python tools/connector.py
+# 3) Start the service (owns the serial port, serves TCP passthrough + dashboard)
+python pc/hub.py
+#  → http://127.0.0.1:8765 · TCP 127.0.0.1:8766
+
+# 4) Make the board do something: pointer to (1200,600), then read a small strip top-left
+echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]}]}' | python tools/connector.py
 ```
+
+Flashing details (driver source, parameters, recovery) are in
+[docs/bringup-runbook.md](docs/bringup-runbook.md) (Chinese); the PC side is in
+[pc/README.md](pc/README.md).
 
 Output is always JSON: `{"ok": true, "steps": [...], "vars": {...}}`.
 **If any step fails to verify, the whole job aborts** — it never keeps pressing keys after a mismatch.
@@ -116,7 +138,8 @@ anything not in the table is left as-is, so a missing entry never breaks the pag
 
 | Part | Status | Evidence |
 |---|---|---|
-| Firmware | ✅ builds, flashes, runs | `esp32p4_hid_agent.bin` 328,736 B, 0 errors / 0 warnings |
+| Firmware | ✅ builds, flashes, runs | `esp32p4_hid_agent.bin` 453,056 B |
+| Reproducible build | ✅ builds from a fresh clone | clone into an empty dir → `tools\idf.cmd build` exits 0, same 453,056 B; the generated `sdkconfig` matches the local one line for line (2749 lines) |
 | USB enumeration | ✅ shows up as standard HID | `HID Keyboard Device` + `HID-compliant mouse`, serial = chip MAC |
 | PC bridge | ✅ self-test 39/39 | 2560×1440 capture, Pillow only |
 | Protocol | ✅ v1.2 | 15 commands / 7 error codes / 4 events |

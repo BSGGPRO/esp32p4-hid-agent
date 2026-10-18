@@ -91,7 +91,7 @@ cmd /c "..\tools\idf.cmd -p COM7 -b 460800 flash"
 | 分区表 | `0x8000` | 日志实测 + `CONFIG_PARTITION_TABLE_OFFSET=0x8000` |
 | 应用 | `0x10000` | 日志实测 |
 | Flash | 16 MB / 80 MHz / QIO | 规格书 + sdkconfig；**esptool 仍以 `dio` 写入是正常的**——IDF 源码注释明确写：烧录用 dio，bootloader 启动后自行升级到 quad |
-| 应用镜像 | `esp32p4_hid_agent.bin` = **329,904 B** | 默认 singleapp 分区（1 MB）装得下 |
+| 应用镜像 | `esp32p4_hid_agent.bin` = **453,056 B**（2026-10-18 从零克隆构建实测） | 默认 singleapp 分区（1 MB）装得下 |
 | 进下载模式 | GPIO35=0 且 GPIO36=1（Joint Download Boot） | P4 数据手册 Table 3-3；**板上物理实现（BOOT 键/焊盘）属【无法验证（仅图片）】** |
 | 商家习惯 | 断电重新上电即可再次进烧录态 | 用户手册第 7 页 |
 
@@ -106,7 +106,7 @@ cmd /c "..\tools\idf.cmd -p COM7 -b 460800 flash"
 ## 3. 串口协议自检（固件 → PC 通道）
 
 ```powershell
-$PY = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+$PY = 'python'    # 你的 Python 3.12+（装了 Pillow；PATH 上是商店占位符时换成完整路径）
 cd <repo>\pc
 
 & $PY agent_bridge.py --list-ports          # 认出 CH340 那行

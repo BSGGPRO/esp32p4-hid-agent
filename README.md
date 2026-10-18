@@ -17,20 +17,41 @@
 
 ---
 
-## 快速开始
+## 从零跑通（陌生机器）
+
+两个前置，各做一次：
+
+| 前置 | 怎么做 | 通过的标志 |
+|---|---|---|
+| Python 3.12 + Pillow | `python -m pip install -r pc/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple` | `python -c "import PIL; print(PIL.__version__)"` 有版本号 |
+| CH340 串口驱动 | 管理员运行 `tools\install-ch340-admin.cmd`（或设备管理器里让 Windows 自动装） | 设备管理器「端口」下出现 `USB-SERIAL CH340 (COMx)` |
+
+然后四条命令，每条都给了「该看到什么」：
 
 ```bash
-# 0) Windows + Python 3.12；板子的两个口都插上（见「接线」）
-# 1) 起服务（占串口，提供 TCP 透传 + 网页仪表盘）
-python pc/hub.py                                 # http://127.0.0.1:8765 · TCP 127.0.0.1:8766
+git clone https://github.com/BSGGPRO/esp32p4-hid-agent.git && cd esp32p4-hid-agent
+
+# 1) 编译 + 烧录（需要 ESP-IDF v5.5.6；COM7 换成你的口）
+#    新克隆的仓库没有 build/，先 set-target 再 build；sdkconfig.defaults 和 partitions.csv 都在库里
+tools\idf.cmd set-target esp32p4
+tools\idf.cmd build
+tools\idf.cmd -p COM7 flash
+#  → 末行 "Hash of data verified."；高速口插到目标机后设备管理器出现 "P4 HID Bridge"
 
 # 2) 自检：屏幕 / OCR / 板子 / 指针 / 视觉，五项一次看完
-python tools/connector.py --selfcheck            # 5/5 通过时退出码 0
+python tools/connector.py --selfcheck
+#  → {"ok": true, ...}，退出码 0
 
-# 3) 最小作业：鼠标移到 (1200,600)，读回前台窗口标题
-echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"title","title":"记事本"}]}' \
-  | python tools/connector.py
+# 3) 起服务（占串口，提供 TCP 透传 + 网页仪表盘）
+python pc/hub.py
+#  → http://127.0.0.1:8765 · TCP 127.0.0.1:8766
+
+# 4) 让板子动一下：光标去 (1200,600)，再读屏幕左上角一小块的字
+echo '{"steps":[{"op":"point","x":1200,"y":600},{"op":"ocr","rect":[0,0,600,140]}]}' | python tools/connector.py
 ```
+
+第 1 步的细节（驱动来源、烧录参数、连不上怎么排）在
+[docs/bringup-runbook.md](docs/bringup-runbook.md)；PC 侧接口在 [pc/README.md](pc/README.md)。
 
 输出永远是 JSON：`{"ok": true, "steps": [...], "vars": {...}}`。
 **任何一步核对不上就整单失败并停手**，不会带着错误继续动键鼠。
@@ -117,7 +138,8 @@ http://127.0.0.1:8765/?lang=zh        # 中文
 
 | 部分 | 状态 | 证据 |
 |---|---|---|
-| 固件 | ✅ 编译 + 烧录 + 真机运行 | `esp32p4_hid_agent.bin` 328,736 B，0 error / 0 warning |
+| 固件 | ✅ 编译 + 烧录 + 真机运行 | `esp32p4_hid_agent.bin` 453,056 B |
+| 可复现构建 | ✅ 从零克隆能编译 | `git clone` 到空目录 → `tools\idf.cmd build` 退出码 0，产物同为 453,056 B；生成的 `sdkconfig` 与本地 2749 行逐行一致 |
 | USB 枚举 | ✅ 系统认成标准键鼠 | `HID Keyboard Device` + `HID-compliant mouse`，序列号 = 芯片 MAC |
 | PC 桥 | ✅ 自检 39/39 | 截屏 2560×1440，仅依赖 Pillow |
 | 协议 | ✅ v1.2 | 15 命令 / 7 错误码 / 4 事件 |

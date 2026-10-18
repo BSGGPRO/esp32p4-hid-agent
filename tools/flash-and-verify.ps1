@@ -19,7 +19,11 @@ $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)   #
 $fw   = Join-Path $root 'firmware'
 $pc   = Join-Path $root 'pc'
 $idf  = Join-Path $root 'tools\idf.cmd'
-$PY   = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+$PY   = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe"
+if (-not (Test-Path $PY)) {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd) { $PY = $cmd.Source }
+}
 
 function Fail($msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red; exit 1 }
 function Ok($msg)   { Write-Host "[ OK ] $msg" -ForegroundColor Green }

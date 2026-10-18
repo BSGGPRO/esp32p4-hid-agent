@@ -5,7 +5,7 @@
 **不再为每个任务新建脚本**。要做的事写成 JSON 从管道喂进来，执行完就没了：
 
     echo {"steps":[{"op":"focus","title":"微信"},{"op":"key","combo":"ctrl+f"}]} ^
-        | %USERPROFILE%\\dsh-vision\\Scripts\\python.exe tools/connector.py
+        | python tools/connector.py
 
 也可以直接调 main 里的 run_job(dict) 拿返回字典。
 

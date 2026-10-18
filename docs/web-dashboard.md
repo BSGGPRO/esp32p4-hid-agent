@@ -9,8 +9,8 @@
 ## 0. TL;DR
 
 ```powershell
-# 仓库根目录；python 用这个绝对路径（PATH 上的 python 是商店占位符）
-$PY = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+# 仓库根目录；python 指你的解释器（PATH 上是商店占位符时换成完整路径）
+$PY = 'python'
 & $PY pc\hub.py --serial COM7 --who "web-ui:hub" --quiet
 ```
 
@@ -70,7 +70,7 @@ $PY = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 
 ```powershell
 cd <repo>
-& 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe' `
+& python `
   pc\hub.py --serial COM7 --who "web-ui:hub" --quiet
 ```
 

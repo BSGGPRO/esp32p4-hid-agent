@@ -11,3 +11,11 @@
 # 无网络时的替代 / offline alternative:
 #   若 Pillow 不可用，除 screenshot / e2e-demo / verify 之外的全部命令仍可用。
 Pillow>=9.0
+
+# ---- 可选依赖（不装也能跑；装了才解锁对应操作）--------------------------------
+# OCR：connector 的 ocr / find / read_text，以及 --selfcheck 的「OCR 引擎」一项
+#   python -m pip install rapidocr-onnxruntime
+#
+# 本地视觉：connector 的 see（常驻服务 tools/visiond.py 用同一套依赖）
+#   约 5 GB 下载；需要 NVIDIA 显卡（4bit 量化后约占 2.5 GB 显存）
+#   python -m pip install torch transformers bitsandbytes accelerate

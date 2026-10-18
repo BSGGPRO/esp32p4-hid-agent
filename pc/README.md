@@ -22,7 +22,7 @@ PC 侧桥接 CLI：把 JSON-lines 命令通过 UART 发给 P4（协议见 `../do
 下面统一记作 `$PY`：
 
 ```powershell
-$PY = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+$PY = 'python'    # 你的 Python 3.12+（装了 Pillow；PATH 上是商店占位符时换成完整路径）
 ```
 
 ## 2. 文件清单
@@ -175,7 +175,7 @@ exit=0
 板子插上后（CH340C → 通常 `COM6`/`COM7`），按顺序跑：
 
 ```powershell
-$PY = 'C:\Users\lu''hao\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe'
+$PY = 'python'    # 你的 Python 3.12+（装了 Pillow；PATH 上是商店占位符时换成完整路径）
 cd esp32p4-hid-agent\pc
 
 # 0) 确认板子在哪：应看到 CH340 那行带 ★（蓝牙 COM4/COM5 会被标为「跳过」）
