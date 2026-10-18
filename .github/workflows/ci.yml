@@ -26,10 +26,17 @@ jobs:
         run: python tests/smoke.py
 
       - name: 仪表盘自检（离线拉起 hub，不碰板子）
-        run: python tests/web_selftest.py
         env:
           # runner 的默认编码是 cp1252，hub 子进程打印中文会炸
           PYTHONUTF8: "1"
+        run: |
+          python tests/web_selftest.py 2>&1 | Tee-Object -FilePath selftest.log
+          $code = $LASTEXITCODE
+          # 把失败项贴到运行页摘要上，否则日志要 admin 权限才能看
+          "## 仪表盘自检" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          Get-Content selftest.log | Where-Object { $_ -match 'FAIL|结果：' } |
+            Select-Object -First 25 | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          exit $code
 
   docs:
     runs-on: ubuntu-latest
