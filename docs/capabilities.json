@@ -108,7 +108,7 @@
     "tools/draw-image.py <图> --mode engrave --levels 90,125,160,195,225 --draw   # 照片级（等值线）",
     "tools/photo-to-draw.py 照片.jpg --quality good        # 照片一键：只预览",
     "tools/photo-to-draw.py 照片.jpg --quality good --draw # 照片一键：真画（1-3 分钟）",
-    "照片转画.bat                                           # 双击：选照片/预览/开始画的小窗口",
+    "photo-draw.bat                                           # 双击：选照片/预览/开始画的小窗口",
     "tools/draw-image.py --from-plan plan.txt        # 图片转成坐标文字后直接画",
     "tools/draw-image.py --from-plan plan.json       # 重放本工具输出的计划"
   ],
@@ -124,7 +124,7 @@
     },
     "photo_program": {
       "cli": "tools/photo-to-draw.py <照片> --quality quick|good|hd [--draw]",
-      "gui": "照片转画.bat / tools/photo-draw-gui.py（选照片 -> 预览 -> 开始画）",
+      "gui": "photo-draw.bat / tools/photo-draw-gui.py（选照片 -> 预览 -> 开始画）",
       "presets": {"quick": "3 层 30-60s", "good": "5 层 1-3min", "hd": "7 层 3-8min"},
       "limits": "1px 铅笔笔画无法无损还原照片；清晰度第一瓶颈是画布尺寸（画图窗口白画布 482x483 太小），第二是笔画预算"
     },

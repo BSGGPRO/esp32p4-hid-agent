@@ -102,7 +102,7 @@ python tools\draw-image.py "inbox\ascii-xxx.png" --mode sketch --draw
 ## 5c. 照片 → 画：一键程序（2026-10-18 上午，响应「导入照片就能画」）
 
 ```powershell
-# 双击仓库根的「照片转画.bat」= 小窗口：选照片 -> 质量 -> ①预览(不动鼠标) -> ②开始画
+# 双击仓库根的「photo-draw.bat」= 小窗口：选照片 -> 质量 -> ①预览(不动鼠标) -> ②开始画
 # 或者命令行：
 python tools\photo-to-draw.py 照片.jpg                       # 只预览（安全）
 python tools\photo-to-draw.py 照片.jpg --quality good --draw  # 真画
@@ -130,7 +130,7 @@ python tools\photo-to-draw.py 照片.jpg --quality good --draw  # 真画
 程序结构：
 - `tools/photo-to-draw.py`：CLI，套 presets 调 `draw-image.py`，输出计划/预览/相似度/真画结果
 - `tools/photo-draw-gui.py`：tkinter 小窗口（选照片、质量下拉、预览、开始画、停止、日志）
-- `照片转画.bat`：双击入口（优先 pythonw，无窗口）
+- `photo-draw.bat`：双击入口（优先 pythonw，无窗口）
 
 ## 6. 证据
 

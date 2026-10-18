@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """tools/photo-draw-gui.py — 点几下就能「照片 -> 画」的小窗口程序。
 
-用法：双击仓库根的「照片转画.bat」，或 python tools\\photo-draw-gui.py
+用法：双击仓库根的「photo-draw.bat」，或 python tools\\photo-draw-gui.py
 流程：选照片 -> 选质量 -> 预览（不动鼠标）-> 满意了点「开始画」（板子鼠标真画到画图里）
 """
 from __future__ import annotations
