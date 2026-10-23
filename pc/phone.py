@@ -247,11 +247,14 @@ class MirrorScreen:
     三种来源，按优先级：显式 ``rect`` → 按标题找窗口 → 报错（不瞎猜整屏）。
     """
 
-    def __init__(self, rect=None, titles=MIRROR_TITLES, latency: float = 0.35, trim: bool = False):
+    def __init__(self, rect=None, titles=MIRROR_TITLES, latency: float = 0.35, trim: bool = False,
+                 video_box=None):
         self._rect = tuple(rect) if rect else None
         self.titles = titles
         self.latency = float(latency)
         self.trim = bool(trim)
+        #: 视频区在窗口客户区里的偏移；量一次存下来，之后每帧只取这一块
+        self.video_box = tuple(video_box) if video_box else load_video_box()
         self.info: dict = {}
         self.last_box: tuple[int, int, int, int] | None = None
         self.trimmed = False
@@ -300,6 +303,13 @@ class MirrorScreen:
         raw = ImageGrab.grab(bbox=(x1, y1, x2, y2), all_screens=True).convert("RGB")
         self.trimmed = False
         self.last_box = (x1, y1, x2, y2)
+        if self.video_box:  # 只取视频区（窗口里还混着接收器自己的界面）
+            dx1, dy1, dx2, dy2 = self.video_box
+            dx2, dy2 = min(dx2, raw.size[0]), min(dy2, raw.size[1])
+            if dx2 - dx1 > 50 and dy2 - dy1 > 50:
+                raw = raw.crop((dx1, dy1, dx2, dy2))
+                self.last_box = (x1 + dx1, y1 + dy1, x1 + dx2, y1 + dy2)
+                self.trimmed = True
         if not self.trim:
             return raw
         img, (dx1, dy1, dx2, dy2) = trim_letterbox(raw)
@@ -386,6 +396,32 @@ def pointer(before: Image.Image, after: Image.Image, near: tuple[float, float], 
 def default_calibration_path() -> str:
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     return os.path.join(base, "esp32p4-phone", "calibration.json")
+
+
+def load_video_box(path: str | None = None) -> tuple[int, int, int, int] | None:
+    """读「视频区在窗口客户区里的偏移」``(dx1,dy1,dx2,dy2)``，没有就 None。"""
+    try:
+        data = json.load(open(path or default_calibration_path(), encoding="utf-8"))
+        box = data.get("video_box")
+        return tuple(int(v) for v in box) if box else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def save_video_box(box, path: str | None = None) -> str:
+    """把视频区偏移写进标定文件（和 span 放一起，一个手机一份配置）。"""
+    p = path or default_calibration_path()
+    data = {}
+    if os.path.exists(p):
+        try:
+            data = json.load(open(p, encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {}
+    data["video_box"] = [int(v) for v in box]
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return p
 
 
 class Phone:

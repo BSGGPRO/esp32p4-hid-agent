@@ -43,7 +43,10 @@ from phone import (  # noqa: E402
     Phone,
     PhoneError,
     ScreenError,
+    default_calibration_path,
     find_mirror_window,
+    load_video_box,
+    save_video_box,
 )
 
 
@@ -256,13 +259,32 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("home")
     sub.add_parser("back")
     sub.add_parser("reset")
+    p = sub.add_parser("box")
+    p.add_argument("--set", dest="box_set", default=None,
+                   help='视频区在窗口客户区里的偏移 "dx1,dy1,dx2,dy2"（量一次存下来）')
     p = sub.add_parser("run")
     p.add_argument("script")
     return ap
 
 
+def cmd_box(args) -> dict:
+    """看/设「视频区在窗口客户区里的偏移」——量一次，之后每帧只取这一块。"""
+    if not getattr(args, "box_set", None):
+        box = load_video_box(getattr(args, "calib", None))
+        return {"ok": True, "video_box": list(box) if box else None,
+                "file": getattr(args, "calib", None) or default_calibration_path()}
+    try:
+        box = tuple(int(float(v)) for v in str(args.box_set).replace(";", ",").split(","))
+    except ValueError:
+        return {"ok": False, "err": "bad_arg", "detail": "要四个整数：dx1,dy1,dx2,dy2"}
+    if len(box) != 4 or box[2] - box[0] < 50 or box[3] - box[1] < 50:
+        return {"ok": False, "err": "bad_arg", "detail": "区域太小：%s" % (box,)}
+    path = save_video_box(box, getattr(args, "calib", None))
+    return {"ok": True, "video_box": list(box), "file": path}
+
+
 HANDLERS = {
-    "status": cmd_status, "calibrate": cmd_calibrate, "see": cmd_see,
+    "status": cmd_status, "calibrate": cmd_calibrate, "see": cmd_see, "box": cmd_box,
     "tap": cmd_gesture, "swipe": cmd_gesture, "drag": cmd_gesture, "scroll": cmd_gesture,
     "type": cmd_gesture, "key": cmd_gesture, "home": cmd_gesture, "back": cmd_gesture,
     "reset": cmd_gesture, "run": cmd_run,
@@ -271,7 +293,7 @@ HANDLERS = {
 #: 给 ``run()``（MCP 等进程内调用）用的默认参数，缺哪个补哪个
 _DEFAULTS = dict(json=True, transport="auto", calib=None, rect=None, latency=0.35, aim=False, trim=False,
                  fling=False, finish=None, points=None, script=None, lines=0, text="", combo="",
-                 out=None, x=0.0, y=0.0, x1=0.0, y1=0.0, x2=0.0, y2=0.0)
+                 out=None, box_set=None, x=0.0, y=0.0, x1=0.0, y1=0.0, x2=0.0, y2=0.0)
 
 
 def run(op: str, **params) -> dict:
