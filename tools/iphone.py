@@ -61,7 +61,8 @@ def _screen(args) -> MirrorScreen | None:
         if len(parts) != 4:
             raise SystemExit("--rect 要写 x1,y1,x2,y2（物理像素）")
         rect = parts
-    return MirrorScreen(rect=rect, latency=getattr(args, "latency", 0.35))
+    return MirrorScreen(rect=rect, latency=getattr(args, "latency", 0.35),
+                        trim=getattr(args, "trim", False))
 
 
 def _out(obj: dict) -> None:
@@ -225,6 +226,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--calib", default=None, help="标定文件路径（默认 %%LOCALAPPDATA%%\\esp32p4-phone\\calibration.json）")
     ap.add_argument("--rect", default=None, help="手机镜像区域 x1,y1,x2,y2（物理像素）；不给就按窗口标题找")
     ap.add_argument("--latency", type=float, default=0.35, help="镜像延迟秒数（默认 0.35）")
+    ap.add_argument("--trim", action="store_true",
+                    help="自动裁掉留边（会随画面内容漂移，坐标不稳定；只在临时看图时用）")
     ap.add_argument("--aim", action="store_true", help="点之前看屏纠偏（慢，但准）")
     sub = ap.add_subparsers(dest="op", required=True)
 
@@ -266,7 +269,7 @@ HANDLERS = {
 }
 
 #: 给 ``run()``（MCP 等进程内调用）用的默认参数，缺哪个补哪个
-_DEFAULTS = dict(json=True, transport="auto", calib=None, rect=None, latency=0.35, aim=False,
+_DEFAULTS = dict(json=True, transport="auto", calib=None, rect=None, latency=0.35, aim=False, trim=False,
                  fling=False, finish=None, points=None, script=None, lines=0, text="", combo="",
                  out=None, x=0.0, y=0.0, x1=0.0, y1=0.0, x2=0.0, y2=0.0)
 

@@ -186,40 +186,59 @@ def find_mirror_window(titles=MIRROR_TITLES) -> dict | None:
             "hwnd": best["hwnd"], "minimized": False}
 
 
-def trim_letterbox(img: Image.Image, thr: int = 20, need: float = 0.98) -> tuple[Image.Image, tuple[int, int, int, int]]:
-    """裁掉四周的纯黑边（竖屏手机塞进横窗口时的黑条）。
+def trim_letterbox(img: Image.Image, thr: int = 8, need: float = 0.98) -> tuple[Image.Image, tuple[int, int, int, int]]:
+    """裁掉留边，只留视频区（黑边、白边都认）。
 
-    从四条边往里收，直到某一行/列不再是 ``need`` 比例的近黑像素为止。
-    裁出来不足原图 30% 就判定为「不是黑边」（比如屏幕本来就是黑的），原图返回。
+    做法不是"找黑"，而是**找有内容的列/行**：留边是纯色（标准差≈0），视频区有细节（标准差高）。
+    所以白底接收器（AirPlay-Windows 就是白底）和黑底接收器都能裁对。
+    裁出来不足原图 30% 就判定为"没有留边"（比如整屏纯色），原图返回。
     返回 ``(图, (dx1,dy1,dx2,dy2))``，偏移是相对原图的像素。
     """
     g = img.convert("L")
     w, h = g.size
     px = g.load()
+    step = max(1, min(w, h) // 220)  # 采样步长，别在 4K 上算 800 万次
 
-    def row_black(y: int) -> bool:
-        n = sum(1 for x in range(0, w, 3) if px[x, y] <= thr)
-        return n >= need * len(range(0, w, 3))
+    def sd(vals: list[int]) -> float:
+        m = sum(vals) / len(vals)
+        return (sum((v - m) ** 2 for v in vals) / len(vals)) ** 0.5
 
-    def col_black(x: int) -> bool:
-        n = sum(1 for y in range(0, h, 3) if px[x, y] <= thr)
-        return n >= need * len(range(0, h, 3))
-
-    t = 0
-    while t < h - 1 and row_black(t):
-        t += 1
-    b = h - 1
-    while b > t and row_black(b):
-        b -= 1
-    l = 0
-    while l < w - 1 and col_black(l):
-        l += 1
-    r = w - 1
-    while r > l and col_black(r):
-        r -= 1
-    if (r - l + 1) * (b - t + 1) < 0.3 * w * h:
+    ys = list(range(0, h, step))
+    xs = list(range(0, w, step))
+    # 两种"有内容"的证据取并集：亮度起伏（sd）和边缘密度（相邻像素差）
+    # 只用 sd 会被"整列同色的条纹/纯色块"骗到，只用边缘会被大面积平滑渐变骗到。
+    col_sd = [sd([px[x, y] for y in ys]) for x in xs]
+    row_sd = [sd([px[x, y] for x in xs]) for y in ys]
+    col_edge = [sum(1 for y in ys if x > 0 and abs(px[x, y] - px[x - step, y]) > 24) / len(ys) for x in xs]
+    row_edge = [sum(1 for x in xs if y > 0 and abs(px[x, y] - px[x, y - step]) > 24) / len(xs) for y in ys]
+    top = max(col_sd + row_sd)
+    if top <= thr and max(col_edge + row_edge) <= 0.01:  # 整屏纯色，没有可裁的东西
         return img, (0, 0, w, h)
-    return img.crop((l, t, r + 1, b + 1)), (l, t, r + 1, b + 1)
+    bar = max(thr, top * 0.15)
+
+    def span(sds: list[float], edges: list[float]) -> tuple[int, int]:
+        """最长的一段连续"有内容"区间（采样下标）。"""
+        hot = [sds[i] > bar or edges[i] > 0.01 for i in range(len(sds))]
+        best, i = (0, 0), 0
+        while i < len(hot):
+            if hot[i]:
+                j = i
+                while j + 1 < len(hot) and hot[j + 1]:
+                    j += 1
+                if j - i > best[1] - best[0]:
+                    best = (i, j)
+                i = j + 1
+            else:
+                i += 1
+        return best
+
+    c0, c1 = span(col_sd, col_edge)
+    r0, r1 = span(row_sd, row_edge)
+    l, r = c0 * step, min(w, (c1 + 1) * step)
+    t, b = r0 * step, min(h, (r1 + 1) * step)
+    if (r - l) * (b - t) < 0.3 * w * h:
+        return img, (0, 0, w, h)
+    return img.crop((l, t, r, b)), (l, t, r, b)
 
 
 class MirrorScreen:
@@ -228,10 +247,11 @@ class MirrorScreen:
     三种来源，按优先级：显式 ``rect`` → 按标题找窗口 → 报错（不瞎猜整屏）。
     """
 
-    def __init__(self, rect=None, titles=MIRROR_TITLES, latency: float = 0.35):
+    def __init__(self, rect=None, titles=MIRROR_TITLES, latency: float = 0.35, trim: bool = False):
         self._rect = tuple(rect) if rect else None
         self.titles = titles
         self.latency = float(latency)
+        self.trim = bool(trim)
         self.info: dict = {}
         self.last_box: tuple[int, int, int, int] | None = None
         self.trimmed = False
@@ -265,7 +285,11 @@ class MirrorScreen:
 
     # -- 取帧 ---------------------------------------------------------------
     def frame(self) -> Image.Image:
-        """截一帧手机画面（RGB），已裁掉黑边。"""
+        """截一帧手机画面（RGB）。
+
+        默认**不裁边**：自动裁边会随画面内容漂移（同一窗口能裁出不同尺寸），
+        坐标会跟着飘。要稳，就把窗口拖成手机比例让视频铺满；裁剪只是显式开关。
+        """
         try:
             import eyes
 
@@ -274,6 +298,10 @@ class MirrorScreen:
             pass
         x1, y1, x2, y2 = self.rect()
         raw = ImageGrab.grab(bbox=(x1, y1, x2, y2), all_screens=True).convert("RGB")
+        self.trimmed = False
+        self.last_box = (x1, y1, x2, y2)
+        if not self.trim:
+            return raw
         img, (dx1, dy1, dx2, dy2) = trim_letterbox(raw)
         self.last_box = (x1 + dx1, y1 + dy1, x1 + dx2, y1 + dy2)
         self.trimmed = (img.size[0] != raw.size[0] or img.size[1] != raw.size[1])

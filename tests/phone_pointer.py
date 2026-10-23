@@ -148,15 +148,17 @@ def test_drag_holds_and_releases():
 
 
 def test_letterbox_trim():
-    """竖屏手机塞进横窗口：两侧黑边要被裁掉，偏移要报对。"""
-    canvas = Image.new("L", (400, 200), 0)          # black window
-    ImageDraw.Draw(canvas).rectangle((100, 0, 299, 199), fill=120)   # 200x200 video
-    img, (dx1, dy1, dx2, dy2) = P.trim_letterbox(canvas.convert("RGB"))
-    assert img.size == (200, 200), img.size
-    assert (dx1, dx2) == (100, 300), (dx1, dx2)
-    # 全黑图不能把自己裁成 0x0
-    black = Image.new("RGB", (100, 100), 0)
-    img2, box2 = P.trim_letterbox(black)
+    """竖屏手机塞进横窗口：留边要被裁掉，偏移要报对（黑底白底都得对）。"""
+    for bg in (0, 255):                                  # 黑底接收器 / AirPlay-Windows 的白底
+        canvas = Image.new("RGB", (400, 200), (bg, bg, bg))
+        noise = Image.effect_noise((200, 200), 70).convert("RGB")   # 密集细节＝视频区
+        canvas.paste(noise, (100, 0))
+        img, (dx1, dy1, dx2, dy2) = P.trim_letterbox(canvas)
+        assert abs(img.size[0] - 200) <= 2 and img.size[1] == 200, (bg, img.size)
+        assert abs(dx1 - 100) <= 2, (bg, dx1, dx2)
+    # 整屏纯色不能把自己裁成 0x0
+    flat = Image.new("RGB", (100, 100), (30, 30, 30))
+    img2, box2 = P.trim_letterbox(flat)
     assert img2.size == (100, 100) and box2 == (0, 0, 100, 100), (img2.size, box2)
 
 
