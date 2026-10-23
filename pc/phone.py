@@ -135,10 +135,13 @@ def _fit_on_screen(hwnd: int, win: dict) -> dict:
     w, h = min(w, vs[2] - vs[0] - 20), min(h, vs[3] - vs[1] - 60)
     x, y = vs[0] + 10, vs[1] + 40
     u32.SetWindowPos(int(hwnd), 0, int(x), int(y), int(w), int(h), 0x0004 | 0x0010)  # NOZORDER|NOACTIVATE
-    time.sleep(0.6)
-    for w2 in _win_rects():
-        if w2["hwnd"] == int(hwnd):
-            return {"title": w2["title"], "rect": w2["client"], "hwnd": w2["hwnd"]}
+    # SDL 改窗口尺寸时 HWND 会重建，会有一小段「窗口不在」的间隙，所以轮询等它回来
+    for _ in range(10):
+        time.sleep(0.3)
+        for w2 in _win_rects():
+            if w2["title"].strip().lower() == win["title"].strip().lower():
+                return {"title": w2["title"], "rect": w2["client"], "client": w2["client"],
+                        "hwnd": w2["hwnd"]}
     return win
 
 
@@ -214,7 +217,12 @@ class MirrorScreen:
     def rect(self) -> tuple[int, int, int, int]:
         if self._rect:
             return self._rect
-        win = find_mirror_window(self.titles)
+        win = None
+        for _ in range(8):  # 窗口刚被挪过/正在重建时会有短暂间隙
+            win = find_mirror_window(self.titles)
+            if win:
+                break
+            time.sleep(0.25)
         if not win:
             raise ScreenError(
                 "找不到手机镜像窗口（标题里要有 %s 之一）。"

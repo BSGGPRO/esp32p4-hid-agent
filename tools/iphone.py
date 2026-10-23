@@ -268,7 +268,7 @@ HANDLERS = {
 #: 给 ``run()``（MCP 等进程内调用）用的默认参数，缺哪个补哪个
 _DEFAULTS = dict(json=True, transport="auto", calib=None, rect=None, latency=0.35, aim=False,
                  fling=False, finish=None, points=None, script=None, lines=0, text="", combo="",
-                 x=0.0, y=0.0, x1=0.0, y1=0.0, x2=0.0, y2=0.0)
+                 out=None, x=0.0, y=0.0, x1=0.0, y1=0.0, x2=0.0, y2=0.0)
 
 
 def run(op: str, **params) -> dict:
