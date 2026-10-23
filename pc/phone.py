@@ -62,6 +62,9 @@ MIRROR_TITLES = (
     "apowermirror", "airdroid", "airplay", "mirror", "投屏", "镜像",
 )
 
+#: 最近一次窗口枚举里被吞掉的异常（排查"一个窗口都找不到"时先看这里）
+_last_enum_error: list[str] = []
+
 
 class PhoneError(RuntimeError):
     """手机操作失败（标定缺失、找不到镜像窗口等）。"""
@@ -83,7 +86,16 @@ def _win_rects() -> list[dict]:
         u32.SetProcessDPIAware()
     except Exception:  # noqa: BLE001 — 非 Windows 或已设置
         return []
+    # 放宽签名：别的模块（pc/eyes.py）给这几个 API 绑过自己的 RECT 类型，
+    # 同一个进程里两个 RECT 类互不认识，严格签名会让 byref 直接抛 ArgumentError。
+    for _fn, _n in ((u32.GetWindowRect, 2), (u32.GetClientRect, 2), (u32.ClientToScreen, 2)):
+        try:
+            _fn.argtypes = [ctypes.c_void_p] * _n
+            _fn.restype = ctypes.c_bool
+        except Exception:  # noqa: BLE001 — 设不了就算了，下面还有兜底
+            pass
     out: list[dict] = []
+    errs: list[str] = []
     proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
     def _cb(hwnd, _):
@@ -98,6 +110,10 @@ def _win_rects() -> list[dict]:
             r = ctypes.wintypes.RECT()
             u32.GetWindowRect(hwnd, ctypes.byref(r))
             if r.right - r.left <= 120 or r.bottom - r.top <= 120:
+                # 最小化的窗口 GetWindowRect 给 -32000/160x28：留着但要标出来
+                out.append({"hwnd": int(hwnd), "title": buf.value,
+                            "rect": (r.left, r.top, r.right, r.bottom), "client": None,
+                            "minimized": bool(u32.IsIconic(hwnd))})
                 return True
             cr = ctypes.wintypes.RECT()
             u32.GetClientRect(hwnd, ctypes.byref(cr))
@@ -105,12 +121,15 @@ def _win_rects() -> list[dict]:
             u32.ClientToScreen(hwnd, ctypes.byref(pt))
             client = (pt.x, pt.y, pt.x + (cr.right - cr.left), pt.y + (cr.bottom - cr.top))
             out.append({"hwnd": int(hwnd), "title": buf.value,
-                        "rect": (r.left, r.top, r.right, r.bottom), "client": client})
-        except Exception:  # noqa: BLE001
-            pass
+                        "rect": (r.left, r.top, r.right, r.bottom), "client": client,
+                        "minimized": bool(u32.IsIconic(hwnd))})
+        except Exception as e:  # noqa: BLE001 — 单个窗口读失败不该中断枚举，但要留证据
+            if len(errs) < 3:
+                errs.append(repr(e))
         return True
 
     u32.EnumWindows(proc(_cb), 0)
+    _last_enum_error[:] = errs
     return out
 
 
@@ -155,12 +174,16 @@ def find_mirror_window(titles=MIRROR_TITLES) -> dict | None:
         return None
     clean = [w for w in hits if "clean feed" in w["title"].lower()]
     pool = clean or hits
-    best = max(pool, key=lambda w: (w["client"][2] - w["client"][0]) * (w["client"][3] - w["client"][1]))
+    live = [w for w in pool if w["client"]]
+    if not live:  # 全被最小化了：交给调用方 restore（红线允许 restore）
+        return {"title": pool[0]["title"], "rect": None, "client": None,
+                "hwnd": pool[0]["hwnd"], "minimized": True}
+    best = max(live, key=lambda w: (w["client"][2] - w["client"][0]) * (w["client"][3] - w["client"][1]))
     area = (best["client"][2] - best["client"][0]) * (best["client"][3] - best["client"][1])
     if area < 200 * 200:
         return None
     return {"title": best["title"], "rect": best["client"], "client": best["client"],
-            "hwnd": best["hwnd"]}
+            "hwnd": best["hwnd"], "minimized": False}
 
 
 def trim_letterbox(img: Image.Image, thr: int = 20, need: float = 0.98) -> tuple[Image.Image, tuple[int, int, int, int]]:
@@ -226,8 +249,15 @@ class MirrorScreen:
         if not win:
             raise ScreenError(
                 "找不到手机镜像窗口（标题里要有 %s 之一）。"
-                "先在 PC 上开 AirPlay 接收器并把手机投上去，或用 --rect x1,y1,x2,y2 指定区域。"
-                % "/".join(self.titles[:4]))
+                "先在 PC 上开 AirPlay 接收器并把手机投上去，或用 --rect x1,y1,x2,y2 指定区域。%s"
+                % ("/".join(self.titles[:4]),
+                   ("（窗口枚举异常：%s）" % _last_enum_error[0]) if _last_enum_error else ""))
+        if win.get("minimized"):  # 红线只允许 restore/focus，这里正好用它
+            ctypes.windll.user32.ShowWindow(int(win["hwnd"]), 9)  # SW_RESTORE
+            time.sleep(0.5)
+            win = find_mirror_window(self.titles) or win
+            if win.get("minimized") or not win.get("client"):
+                raise ScreenError("镜像窗口被最小化了，且还原失败。请手动还原 AirPlay 接收器窗口。")
         win = _fit_on_screen(int(win["hwnd"]), win)
         self.info = win
         self._rect = win["rect"]
