@@ -29,6 +29,7 @@ REQ_VERSION = "2025-06-18"      # 客户端要的 MCP 协议版本
 EXPECTED_TOOLS = {
     "board_caps", "board_services", "board_manual", "board_run_job", "board_ocr",
     "board_point", "board_click", "board_type", "board_key", "board_see",
+    "board_phone",
 }
 
 T0 = time.time()
@@ -226,7 +227,8 @@ def main() -> int:
             check("tools/list 返回工具列表", isinstance(tools, list), repr(tools)[:200])
             tools = tools if isinstance(tools, list) else []
             names = [t.get("name") for t in tools if isinstance(t, dict)]
-            check("工具恰好 10 个", len(tools) == 10, "实际 %d 个: %s" % (len(tools), names))
+            check("工具恰好 %d 个" % len(EXPECTED_TOOLS), len(tools) == len(EXPECTED_TOOLS),
+                  "实际 %d 个: %s" % (len(tools), names))
             check("工具名集合固定", set(names) == EXPECTED_TOOLS,
                   "缺=%s 多=%s" % (sorted(EXPECTED_TOOLS - set(names)),
                                    sorted(set(names) - EXPECTED_TOOLS)))

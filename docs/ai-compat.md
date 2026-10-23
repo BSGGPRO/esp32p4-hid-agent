@@ -34,8 +34,8 @@ development tools like Visual Studio Code, Cursor, MCPJam, and many others all s
 | Windsurf / Zed / Cline / Continue | ⚠️ 未逐一核实 | 它们都提供"自定义 MCP server"入口，填 `python` + `tools/mcp_server.py` 即可；**这四个我没找到一手文档，先按未验证算** |
 | Trae / CodeBuddy / 通义灵码 / 文心快码 | ⚠️ 未验证 | 中国区工具变动快，我没查到稳定的一手文档。请在你本地客户端里看有没有 "MCP" 入口；有就填命令，没有就退回 B/C 层 |
 
-十个工具（名字固定）：`board_caps` `board_services` `board_manual` `board_run_job` `board_ocr`
-`board_point` `board_click` `board_type` `board_key` `board_see`。细节见说明书 3.1 节。
+十一个工具（名字固定）：`board_caps` `board_services` `board_manual` `board_run_job` `board_ocr`
+`board_point` `board_click` `board_type` `board_key` `board_see` `board_phone`。细节见说明书 3.1 节。
 
 > ⚠️ **一个真实的坑**：四份配置里写的是 `"command": "python"`。如果这台机器的 `python` 是
 > Microsoft Store 的占位符（`where python` 指向 `WindowsApps\python.exe`，跑起来报

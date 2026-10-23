@@ -209,6 +209,24 @@ def _tool_see(args: dict) -> dict:
     return res
 
 
+def _iphone():
+    """惰性导入 tools/iphone.py（手机手势引擎的入口）。"""
+    if "iphone" not in sys.modules:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        sys.path.insert(0, os.path.join(ROOT, "pc"))
+    import iphone
+
+    return iphone
+
+
+def _tool_phone(args: dict) -> dict:
+    op = _as_text(_need(args, "op"), "op")
+    params = {k: v for k, v in args.items() if k != "op"}
+    if "transport" in params:
+        params["transport"] = _pick_transport(args)
+    return _iphone().run(op, **params)
+
+
 # ---------------------------------------------------------------- 工具清单
 
 def _tool(name: str, description: str, schema: dict) -> dict:
@@ -287,6 +305,29 @@ TOOLS = [
               "question": {"type": "string", "description": "问题，一句话。"},
               "transport": {"type": "string", "enum": ["auto", "tcp", "serial"], "default": "auto"}},
            "required": []}),
+    _tool("board_phone",
+          "操作手机（iPhone / 安卓）：板子原生 USB 口插手机＝真 USB 键鼠，CH340 口插电脑收命令，"
+          "固件不用改。坐标是屏幕比例 0..1（左上原点）。op 取 "
+          "status / see / calibrate / tap / swipe / drag / scroll / type / key / home / back / reset / run。"
+          "先 status 看镜像窗口和标定，再 see 截图；点得准就先 calibrate（或 tap 带 aim=true）。",
+          {"type": _OBJ, "properties": {
+              "op": {"type": "string",
+                     "enum": ["status", "see", "calibrate", "tap", "swipe", "drag",
+                              "scroll", "type", "key", "home", "back", "reset", "run"]},
+              "x": {"type": "number", "description": "屏幕比例 0..1"},
+              "y": {"type": "number", "description": "屏幕比例 0..1"},
+              "x1": {"type": "number"}, "y1": {"type": "number"},
+              "x2": {"type": "number"}, "y2": {"type": "number"},
+              "points": {"type": "string", "description": 'drag 用："x1,y1;x2,y2;..."（比例）'},
+              "lines": {"type": "integer", "description": "scroll 行数，正=上滚"},
+              "text": {"type": "string", "description": "type 要敲的文本（ASCII）"},
+              "combo": {"type": "string", "description": 'key 组合键，如 "enter"'},
+              "finish": {"type": "string", "description": "calibrate 手工单点：指针当前比例 x,y"},
+              "rect": {"type": "string", "description": "手机镜像区域 x1,y1,x2,y2（物理像素）"},
+              "aim": {"type": "boolean", "description": "点之前看屏纠偏（慢但准）"},
+              "script": {"type": "string", "description": "run 的计划 JSON 路径"},
+              "transport": {"type": "string", "enum": ["auto", "tcp", "serial"], "default": "auto"}},
+           "required": ["op"]}),
 ]
 
 TOOL_NAMES = [t["name"] for t in TOOLS]
@@ -302,6 +343,7 @@ _HANDLERS = {
     "board_type": _tool_type,
     "board_key": _tool_key,
     "board_see": _tool_see,
+    "board_phone": _tool_phone,
 }
 
 # ---------------------------------------------------------------- 工具调用

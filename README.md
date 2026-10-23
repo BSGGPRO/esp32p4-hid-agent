@@ -63,7 +63,7 @@ type job.json | esp32p4-agent.exe
 
 | 层 | 谁 | 你只需做一个动作 |
 |---|---|---|
-| **MCP** | Claude Code / Claude Desktop / ChatGPT / VS Code Copilot / Cursor / Gemini CLI / MCPJam … | `python tools/mcp_server.py`（stdio MCP 服务器）。配置已经放好：[`.mcp.json`](.mcp.json)、[`.cursor/mcp.json`](.cursor/mcp.json)、[`.vscode/mcp.json`](.vscode/mcp.json)、[`.gemini/settings.json`](.gemini/settings.json)。十个工具：`board_caps` `board_services` `board_manual` `board_run_job` `board_ocr` `board_point` `board_click` `board_type` `board_key` `board_see` |
+| **MCP** | Claude Code / Claude Desktop / ChatGPT / VS Code Copilot / Cursor / Gemini CLI / MCPJam … | `python tools/mcp_server.py`（stdio MCP 服务器）。配置已经放好：[`.mcp.json`](.mcp.json)、[`.cursor/mcp.json`](.cursor/mcp.json)、[`.vscode/mcp.json`](.vscode/mcp.json)、[`.gemini/settings.json`](.gemini/settings.json)。十一个工具：`board_caps` `board_services` `board_manual` `board_run_job` `board_ocr` `board_point` `board_click` `board_type` `board_key` `board_see` `board_phone`（手机控制） |
 | **读 AGENTS.md 的编码代理** | Codex / Jules / Aider / Cursor / Gemini CLI / Copilot coding agent / Windsurf / Augment / goose / opencode / Zed / Warp … | 仓库根的 [`AGENTS.md`](AGENTS.md) 就是给它们的；[`CLAUDE.md`](CLAUDE.md)、[`GEMINI.md`](GEMINI.md)、[`.clinerules`](.clinerules)、[`.windsurfrules`](.windsurfrules)、[`.aider.conf.yml`](.aider.conf.yml)、[`.github/copilot-instructions.md`](.github/copilot-instructions.md) 是各家的薄别名（只放指针，不复制说明书） |
 | **只会读文字的聊天 AI** | 豆包 / Kimi / 通义 / 文心 / 网页版 DeepSeek … | 窗口版一颗「保存 AI 说明书…」存成 `.md` 拖给它；它出 JSON，你用「用板子运行作业」执行——聊天 AI 没有手，执行器得是你这边 |
 
@@ -377,6 +377,7 @@ http://127.0.0.1:8765/?lang=zh        # 中文
 | [docs/bringup-runbook.md](docs/bringup-runbook.md) | 从零到跑通的步骤 |
 | [docs/brain-usage.md](docs/brain-usage.md) | `brain.py` 接口用法 |
 | [docs/image-to-draw.md](docs/image-to-draw.md) | 图片转笔画与绘制 |
+| [docs/phone-agent.md](docs/phone-agent.md) | 手机控制：板子当手机的真 USB 键鼠（移植件） |
 
 ---
 
@@ -393,3 +394,14 @@ http://127.0.0.1:8765/?lang=zh        # 中文
 ## License
 
 MIT，见 [LICENSE](LICENSE)。
+
+## 移植件与致谢
+
+`pc/phone.py`、`tools/iphone.py`（手机控制，见 [docs/phone-agent.md](docs/phone-agent.md)）是移植件：
+
+- **[ESP32 iPhone Agent by Henry Yuan](https://github.com/onehumanbeing/esp32-iphone-agent)**（MIT）——
+  相对指针标定 / 归零 / 看屏纠偏算法与手势语义来自其 `server/hidagent/{phone,vision}.py`。
+- **[AirPlay-Windows](https://github.com/moieric11/AirPlay-Windows)**（MIT，基于 GPL-3.0 的
+  [UxPlay](https://github.com/FDH2/UxPlay)）—— 作为独立进程安装在本机提供"眼睛"，源码不并入本仓库。
+
+详见 [NOTICE](NOTICE)。

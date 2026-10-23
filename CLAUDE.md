@@ -7,7 +7,8 @@
 全屏不发键鼠（除非 `"force": true`）；不可逆动作（删除/发送/支付/关机）先问人；别猜坐标，先 `ocr`/`find`/`ui`。
 
 **MCP（推荐）**：`claude mcp add esp32p4-hid-board -- python tools/mcp_server.py`；
-仓库已带 `.mcp.json`（同一个 server）。10 个工具：`board_caps` `board_services` `board_manual`
-`board_run_job` `board_ocr` `board_point` `board_click` `board_type` `board_key` `board_see`。
+仓库已带 `.mcp.json`（同一个 server）。11 个工具：`board_caps` `board_services` `board_manual`
+`board_run_job` `board_ocr` `board_point` `board_click` `board_type` `board_key` `board_see`
+`board_phone`（手机控制，见 [docs/phone-agent.md](docs/phone-agent.md)）。
 
 **不用 MCP 时**：`python tools/connector.py --selfcheck`，或 `echo '{"steps":[...]}' | python tools/connector.py`。

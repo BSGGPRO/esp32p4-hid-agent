@@ -1,0 +1,42 @@
+NOTICE
+======
+
+本仓库包含移植自第三方项目的代码与算法，也存在仅作为独立进程引用的第三方软件。
+上游要求保留署名，逐个列在这里。
+
+--------------------------------------------------------------------------------
+1) 手机控制模块（pc/phone.py、tools/iphone.py、tests/phone_pointer.py）
+
+   ESP32 iPhone Agent by Henry Yuan
+   https://github.com/onehumanbeing/esp32-iphone-agent
+   License: MIT
+   Copyright (c) Henry Yuan
+
+   取用的部分：server/hidagent/phone.py 的相对指针跟踪 / 两点标定 / 每 N 次归零 /
+   看屏纠偏 / 线性拟合校正，以及 server/hidagent/vision.py 的 pointer() 与 changed()。
+   本仓库把传输层从其原版 BLE(ESP32-S3) 换成 ESP32-P4 的 JSON-lines 协议
+   (docs/protocol.md)，其余算法保持等价。
+
+   上游 NOTICE 要求：任何复制、移植、改编或复用本项目任何部分的作品，
+   必须保留 MIT 版权声明，并在 README 及任何演示或发布中公开署名
+   "ESP32 iPhone Agent by Henry Yuan (https://github.com/onehumanbeing/esp32-iphone-agent)"。
+   本仓库已在 README.md「移植件与致谢」与 docs/phone-agent.md §9 中署名。
+
+--------------------------------------------------------------------------------
+2) 手机屏幕采集（未并入源码，仅作为独立进程安装本机）
+
+   AirPlay-Windows
+   https://github.com/moieric11/AirPlay-Windows
+   License: MIT
+   Copyright (c) moieric11
+
+   该接收器基于 UxPlay：
+   UxPlay — https://github.com/FDH2/UxPlay — GPL-3.0
+
+   本仓库不复制、不链接、不再分发上述二进制的任何部分；安装位置在用户目录
+   (%LOCALAPPDATA%\esp32p4-phone\airplay)，通过窗口截屏与 AirPlay 广播交互。
+
+--------------------------------------------------------------------------------
+3) 协议与驱动相关
+
+   本仓库固件 (firmware/) 为本项目自有，未从上述项目引入任何代码。

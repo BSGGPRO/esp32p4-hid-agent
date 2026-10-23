@@ -17,9 +17,10 @@
 
 ## 三层用法（任选一层，命令都在仓库根执行）
 
-- **A. MCP（最省事）**：`python tools/mcp_server.py` 是 stdio MCP 服务器，10 个工具：
+- **A. MCP（最省事）**：`python tools/mcp_server.py` 是 stdio MCP 服务器，11 个工具：
   `board_caps` `board_services` `board_manual` `board_run_job` `board_ocr` `board_point`
-  `board_click` `board_type` `board_key` `board_see`。客户端配置见 `.mcp.json`（Claude Code）、
+  `board_click` `board_type` `board_key` `board_see` `board_phone`（手机：板子插手机当键鼠，
+  见 [docs/phone-agent.md](docs/phone-agent.md)）。客户端配置见 `.mcp.json`（Claude Code）、
   `.cursor/mcp.json`（Cursor）、`.vscode/mcp.json`（VS Code / Copilot）、`.gemini/settings.json`（Gemini CLI）。
   配置里的 `command` 是 `python`；若本机 `python` 是 Microsoft Store 占位符，改成真解释器路径，
   或改用 `tools\mcp-serve.cmd <解释器>`（先 `where python` 查一眼）。

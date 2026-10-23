@@ -100,11 +100,15 @@ claude mcp add esp32p4-hid-board -- python tools/mcp_server.py
 | `board_type` | `text` | `type` |
 | `board_key` | `combo`，如 `ctrl+s` | `key` |
 | `board_see` | `question` | `see`（只回答是/否/"这是什么"；它报的坐标别信） |
+| `board_phone` | `op` + 该 op 的参数（`x/y`、`x1..y2`、`points`、`lines`、`text`、`combo`、`aim`…） | 手机手势那一套，见 [phone-agent.md](phone-agent.md) |
 
 返回统一是 `{"content":[{"type":"text","text":"<JSON 字符串>"}],"isError":false}`；
 出错时 `isError:true`，text 里是中文说明 + 原始 JSON。
 **注意**：MCP 底下跑的还是同一套 connector，所以第 1 节那七条硬规矩一条都不少——
 工具描述里也写了，别因为"是工具调用"就放松。
+
+> **手机控制**（`board_phone`）是另一套坐标系：它的 `x/y` 是**手机屏幕比例 0..1**，
+> 不是本机物理像素；别和 `board_click` 混用。接线、标定、坑都在 [phone-agent.md](phone-agent.md)。
 
 ---
 
